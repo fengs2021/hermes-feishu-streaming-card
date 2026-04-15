@@ -36,12 +36,12 @@ Adds Feishu/Lark streaming card support to [Hermes Gateway](https://github.com/j
 
 ## Changelog
 
-### v1.1.0（2026-04-15）
-- ✨ **Support latest Hermes**: Rewrote patch engine to adapt to latest NousResearch/hermes-agent code structure (send() signature change)
+### v1.1.0 (2026-04-15)
+- ✨ **Support latest Hermes** (commit `da8bab7`): Rewrote patch engine to adapt to latest NousResearch/hermes-agent code structure (send() signature change)
 - 🔧 **Auto version detection**: `installer.py --check` auto-detects target Hermes version, skips if already installed
 - 🐛 Fix: Agent footer no longer leaks into thinking_content body
 
-### v1.0.0（2026-04-15）
+### v1.0.0 (2026-04-15)
 - 🎉 Initial release
 - Streaming typewriter card, tool call tracking, Token stats footer
 
