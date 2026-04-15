@@ -4,7 +4,7 @@ feishu_patch.py
 Injects (or verifies) the Feishu streaming card feature into
 hermes-agent/gateway/platforms/feishu.py.
 
-Version-aware: works on both Hermes versions.
+Version-aware: works on Hermes versions with different send() structures.
 If streaming card is already installed, verifies and skips.
 Otherwise, injects into the correct locations based on detected code structure.
 
@@ -13,7 +13,7 @@ What it patches:
   2. Adds methods: _get_card_lock, _get_tenant_access_token, _build_streaming_card,
                    send_streaming_card, _update_card_element, set_streaming_greeting,
                    set_streaming_pending, is_streaming_pending, clear_streaming_pending,
-                   clear_streaming_card
+                   clear_streaming_card, format_token, _build_footer, finalize_streaming_card
   3. Modifies send(): prepends the 4-branch streaming card routing at the start
   4. Modifies edit_message(): routes ALL content to streaming card
 
@@ -34,507 +34,506 @@ def _get_default_greeting() -> str:
     return "主人，苏菲为您服务！"
 
 
-def _read_config(hermes_dir: str) -> dict:
-    """Read hermes config.yaml and return the feishu_streaming_card section."""
-    import yaml
-    cfg_path = f"{hermes_dir}/config.yaml"
-    try:
-        with open(cfg_path) as f:
-            cfg = yaml.safe_load(f) or {}
-    except Exception:
-        cfg = {}
-    return cfg.get("feishu_streaming_card", {})
-
-
 # ─────────────────────────────────────────────────────────────────
 # Code to inject: streaming card state attrs in __init__
 # Injected after the last "self._xxx =" assignment in __init__
+# Indentation: 8 spaces (one level inside __init__)
 # ─────────────────────────────────────────────────────────────────
 
-STREAMING_STATE_INIT = '''
-        # ── Feishu Streaming Card state ────────────────────────────────────
-        # chat_id → {"card_id", "message_id", "sequence", "tenant_token", ...}
-        self._streaming_card: dict = {}
-        # Per-chat lock to serialize card updates (prevents code=300317 race)
-        self._streaming_card_locks: dict = {}
-        # Pending flag: signals send_progress_messages to wait for card creation
-        self._streaming_pending: dict = {}
-'''
+STREAMING_STATE_INIT = (
+    "        # ── Feishu Streaming Card state ────────────────────────────────────\n"
+    "        # chat_id → card state (card_id, message_id, sequence, ...)\n"
+    "        self._streaming_card: dict = {}\n"
+    "        # Per-chat asyncio.Lock to serialize card updates\n"
+    "        self._streaming_card_locks: dict = {}\n"
+    "        # Pending flag: signals send_progress_messages to wait for card creation\n"
+    "        self._streaming_pending: dict = {}\n"
+)
+
 
 # ─────────────────────────────────────────────────────────────────
 # Code to inject: streaming card methods
-# Injected after the __init__ closing, before the next method
+# Injected right before "async def send("
+# Indentation: 12 spaces (inside class)
 # ─────────────────────────────────────────────────────────────────
 
-STREAMING_METHODS = '''
-    # ══════════════════════════════════════════════════════════════════════
-    # Feishu Streaming Card (CardKit v1) — typewriter card per chat
-    # ══════════════════════════════════════════════════════════════════════
-
-    def _get_card_lock(self, chat_id: str):
-        """Get or create a per-chat asyncio.Lock for serializing card updates."""
-        if chat_id not in self._streaming_card_locks:
-            self._streaming_card_locks[chat_id] = asyncio.Lock()
-        return self._streaming_card_locks[chat_id]
-
-    def _get_tenant_access_token(self) -> str | None:
-        """Get a fresh tenant_access_token via lark-cli."""
-        try:
-            import subprocess as _subprocess
-            from pathlib import Path
-            _lark_cli = Path.home() / ".npm-global" / "bin" / "lark-cli"
-            if not _lark_cli.exists():
-                _lark_cli = Path("/usr/local/bin/lark-cli")
-            _r = _subprocess.run(
-                [_lark_cli, "api", "POST",
-                 "/open-apis/auth/v3/tenant_access_token/internal",
-                 "--data", __import__("json").dumps({
-                     "app_id": self._app_id,
-                     "app_secret": self._app_secret,
-                 })],
-                capture_output=True, text=True, timeout=10,
-            )
-            if _r.returncode == 0:
-                _data = __import__("json").loads(_r.stdout.strip())
-                return _data.get("tenant_access_token")
-        except Exception as _e:
-            __import__("logging").getLogger("feishu").debug(
-                "[Feishu] Failed to get tenant token: %s", _e)
-        return None
-
-    def _build_streaming_card(self, greeting: str, subtitle: str) -> dict:
-        """Vertical layout streaming card. All element_ids are at body root level."""
-        return {
-            "schema": "2.0",
-            "config": {
-                "streaming_mode": True,
-                "update_multi": True,
-                "summary": {"content": "处理中..."},
-                "streaming_config": {
-                    "print_frequency_ms": {"default": 60, "android": 60, "ios": 60, "pc": 60},
-                    "print_step": {"default": 2, "android": 2, "ios": 2, "pc": 2},
-                    "print_strategy": "fast",
-                },
-            },
-            "header": {
-                "template": "indigo",
-                "title": {"content": greeting, "tag": "plain_text"},
-                "subtitle": {"content": f"{subtitle}  🤔思考中", "tag": "plain_text"},
-            },
-            "body": {
-                "direction": "vertical",
-                "padding": "10px 16px 10px 16px",
-                "vertical_spacing": "6px",
-                "elements": [
-                    {"tag": "markdown", "element_id": "thinking_content",
-                     "content": "⏳ 执行中，等待结果...",
-                     "text_size": "normal", "text_align": "left",
-                     "margin": "0px 0px 6px 0px"},
-                    {"tag": "markdown", "element_id": "status_label",
-                     "content": "🤔思考中", "text_size": "small",
-                     "text_color": "grey", "margin": "0px 0px 2px 0px"},
-                    {"tag": "markdown", "element_id": "tools_label",
-                     "content": "🔧 工具调用 (0次)", "text_size": "small",
-                     "text_color": "grey", "margin": "0px 0px 2px 0px"},
-                    {"tag": "markdown", "element_id": "tools_body",
-                     "content": "⏳ 等待开始...", "text_size": "x-small",
-                     "text_color": "grey", "margin": "0px 0px 6px 0px"},
-                    {"tag": "markdown", "element_id": "footer",
-                     "content": "⏳ 执行中...", "text_size": "x-small",
-                     "text_align": "left", "margin": "0px 0px 0px 0px"},
-                ],
-            },
-        }
-
-    async def send_streaming_card(
-        self, chat_id: str, greeting: str, subtitle: str, metadata: dict | None = None
-    ) -> dict | None:
-        """Create and send a Feishu streaming card. Returns card state on success."""
-        try:
-            import urllib.request
-            import urllib.error
-            card_payload = self._build_streaming_card(greeting, subtitle)
-            token = self._get_tenant_access_token() or ""
-            create_url = "https://open.feishu.cn/open-apis/cardkit/v1/cards"
-            req = urllib.request.Request(
-                create_url,
-                data=__import__("json").dumps(card_payload).encode(),
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json",
-                },
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                create_data = __import__("json").loads(resp.read())
-                if create_data.get("code") != 0:
-                    __import__("logging").getLogger("feishu").warning(
-                        "[Feishu] CardKit create failed: %s", create_data)
-                    return None
-                card_id = create_data["data"]["card"]["card_id"]
-
-            send_url = (
-                "https://open.feishu.cn/open-apis/im/v1/messages"
-                "?receive_id_type=chat_id"
-            )
-            msg_payload = __import__("json").dumps({
-                "receive_id": chat_id,
-                "msg_type": "interactive",
-                "content": __import__("json").dumps(card_payload),
-            }).encode()
-            send_req = urllib.request.Request(
-                send_url, data=msg_payload,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json",
-                },
-                method="POST",
-            )
-            with urllib.request.urlopen(send_req, timeout=10) as send_resp:
-                send_data = __import__("json").loads(send_resp.read())
-                if send_data.get("code") != 0:
-                    __import__("logging").getLogger("feishu").warning(
-                        "[Feishu] Card send failed: %s", send_data)
-                    return None
-                message_id = send_data["data"]["message_id"]
-
-            initial_sequence = create_data["data"]["card"].get("sequence", 1)
-            __import__("logging").getLogger("feishu").info(
-                "[Feishu] send_streaming_card: card_id=%s message_id=%s seq=%s",
-                card_id, message_id, initial_sequence)
-            return {
-                "card_id": card_id,
-                "message_id": message_id,
-                "sequence": initial_sequence,
-                "tenant_token": token,
-            }
-        except Exception as e:
-            __import__("logging").getLogger("feishu").error(
-                "[Feishu] send_streaming_card error: %s", e, exc_info=True)
-            return None
-
-    def _update_card_element(
-        self, card_id: str, element_id: str, content: str,
-        sequence: int, token: str,
-    ) -> tuple:
-        """Update a card element via CardKit API. Returns (success, next_sequence)."""
-        try:
-            import urllib.request
-            import urllib.error
-            fresh_token = self._get_tenant_access_token() or token
-            payload = __import__("json").dumps({"content": content}).encode()
-            url = (
-                f"https://open.feishu.cn/open-apis/cardkit/v1/cards/"
-                f"{card_id}/elements/{element_id}/content"
-            )
-            req = urllib.request.Request(
-                url, data=payload,
-                headers={
-                    "Authorization": f"Bearer {fresh_token}",
-                    "Content-Type": "application/json",
-                },
-                method="PUT",
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = __import__("json").loads(resp.read())
-                code = data.get("code", -1)
-                if code == 0:
-                    next_seq = data.get("data", {}).get("sequence", sequence + 1)
-                    return True, next_seq
-                __import__("logging").getLogger("feishu").warning(
-                    "[Feishu] _update_card_element element=%s ok=False code=%s msg=%s",
-                    element_id, code, data.get("msg", ""))
-                return False, -1
-        except Exception as e:
-            __import__("logging").getLogger("feishu").warning(
-                "[Feishu] _update_card_element element=%s error=%s", element_id, e)
-        return False, -1
-
-    def set_streaming_greeting(self, greeting: str) -> None:
-        """Set the greeting to display in the streaming card header."""
-        self._pending_greeting = greeting
-
-    def set_streaming_model(self, model: str) -> None:
-        """Set the model name to display in the streaming card subtitle."""
-        self._pending_subtitle = model
-
-    def set_streaming_pending(self, chat_id: str) -> None:
-        if not hasattr(self, "_streaming_pending"):
-            self._streaming_pending = {}
-        self._streaming_pending[chat_id] = True
-
-    def is_streaming_pending(self, chat_id: str) -> bool:
-        return getattr(self, "_streaming_pending", {}).get(chat_id, False)
-
-    def clear_streaming_pending(self, chat_id: str) -> None:
-        if hasattr(self, "_streaming_pending"):
-            self._streaming_pending.pop(chat_id, None)
-
-    def clear_streaming_card(self, chat_id: str) -> None:
-        self._streaming_card.pop(chat_id, None)
-        self.clear_streaming_pending(chat_id)
-
-    def format_token(self, n: int) -> str:
-        if n >= 1_000_000:
-            s = f"{n / 1_000_000:.1f}M"
-            return s.replace(".0M", "M")
-        elif n >= 1_000:
-            s = f"{n / 1_000:.1f}K"
-            return s.replace(".0K", "K")
-        return str(n)
-
-    def _build_footer(
-        self, model: str, elapsed: float,
-        in_t: int, out_t: int, cache_t: int,
-        ctx_used: int, ctx_limit: int,
-    ) -> str:
-        if elapsed >= 60:
-            m = int(elapsed // 60)
-            s = int(elapsed % 60)
-            elapsed_str = f"{m}m{s}s"
-        else:
-            elapsed_str = f"{elapsed:.1f}s"
-        ctx_pct = ctx_used / ctx_limit * 100 if ctx_limit else 0
-        parts = [
-            f"{elapsed_str}  ·  {self.format_token(in_t)}↑ / {self.format_token(out_t)}↓",
-        ]
-        if cache_t > 0:
-            cache_pct = cache_t / in_t * 100 if in_t else 0
-            parts.append(f"缓存 {self.format_token(cache_t)} ({cache_pct:.1f}%)")
-        parts.append(
-            f"上下文 {self.format_token(ctx_used)}/{self.format_token(ctx_limit)}"
-            f" ({ctx_pct:.1f}%)"
-        )
-        return "  ·  ".join(parts)
-
-    async def finalize_streaming_card(
-        self, chat_id: str, model: str, elapsed: float,
-        in_t: int, out_t: int, cache_t: int,
-        ctx_used: int, ctx_limit: int,
-        result_summary: str = "",
-    ) -> None:
-        """Update streaming card to 'completed' state. Caller holds the card lock."""
-        state = self._streaming_card.get(chat_id)
-        if not state:
-            return
-        greeting = state.get("_greeting", "主人，苏菲为您服务！")
-        tool_count = state.get("_tool_count", 0)
-        model = state.get("_model", model)
-        loop = asyncio.get_event_loop()
-
-        # ① status_label → "✅已完成"
-        _ok, _next_seq = await loop.run_in_executor(
-            None, lambda: self._update_card_element(
-                state["card_id"], "status_label", "✅已完成",
-                state["sequence"], state["tenant_token"]))
-        if _ok:
-            state["sequence"] = _next_seq
-
-        # ② thinking_content → result_summary (strip XML tags + Agent footer)
-        summary = result_summary if result_summary else "主人，任务已完成！"
-        summary = re.sub(r"<think>.*?</think>", "", summary, flags=re.DOTALL)
-        summary = re.sub(r"<think>.*", "", summary, flags=re.DOTALL)
-        summary = re.sub(r"(\n)?\s*Agent\s*·.*", "", summary)
-        summary = summary.strip()
-        _ok, next_seq = await loop.run_in_executor(
-            None, lambda: self._update_card_element(
-                state["card_id"], "thinking_content",
-                summary[:800] if summary else "主人，任务已完成！",
-                state["sequence"], state["tenant_token"]))
-        if _ok:
-            state["sequence"] = next_seq
-
-        # ③ tools_label → completion
-        _ok, _next_seq = await loop.run_in_executor(
-            None, lambda: self._update_card_element(
-                state["card_id"], "tools_label",
-                f"🔧 工具调用 ({tool_count}次)  ✅完成",
-                state["sequence"], state["tenant_token"]))
-        if _ok:
-            state["sequence"] = _next_seq
-
-        # ④ footer → token stats
-        footer = self._build_footer(model, elapsed, in_t, out_t, cache_t, ctx_used, ctx_limit)
-        _ok, _next_seq = await loop.run_in_executor(
-            None, lambda: self._update_card_element(
-                state["card_id"], "footer", footer,
-                state["sequence"], state["tenant_token"]))
-        if _ok:
-            state["sequence"] = _next_seq
-
-        state["finalized"] = True
-        state["finalize_ts"] = __import__("time").time()
-        if not hasattr(self, "_finalized_chats"):
-            self._finalized_chats = {}
-        self._finalized_chats[chat_id] = {
-            "ts": state["finalize_ts"],
-            "card_id": state["card_id"],
-            "message_id": state["message_id"],
-            "tenant_token": state["tenant_token"],
-            "sequence": state["sequence"],
-        }
-'''
+STREAMING_METHODS = (
+    "    # ══════════════════════════════════════════════════════════════════════\n"
+    "    # Feishu Streaming Card (CardKit v1) — typewriter card per chat\n"
+    "    # ══════════════════════════════════════════════════════════════════════\n"
+    "\n"
+    "    def _get_card_lock(self, chat_id: str):\n"
+    "        if chat_id not in self._streaming_card_locks:\n"
+    "            self._streaming_card_locks[chat_id] = asyncio.Lock()\n"
+    "        return self._streaming_card_locks[chat_id]\n"
+    "\n"
+    "    def _get_tenant_access_token(self) -> str | None:\n"
+    '        """Get a fresh tenant_access_token via lark-cli."""\n'
+    "        try:\n"
+    "            import subprocess as _subprocess\n"
+    "            from pathlib import Path\n"
+    "            _lark_cli = Path.home() / \".npm-global\" / \"bin\" / \"lark-cli\"\n"
+    "            if not _lark_cli.exists():\n"
+    "                _lark_cli = Path(\"/usr/local/bin/lark-cli\")\n"
+    "            _r = _subprocess.run(\n"
+    "                [_lark_cli, \"api\", \"POST\",\n"
+    '                 "/open-apis/auth/v3/tenant_access_token/internal",\n'
+    "                 \"--data\", __import__(\"json\").dumps({\n"
+    "                     \"app_id\": self._app_id,\n"
+    "                     \"app_secret\": self._app_secret,\n"
+    "                 })],\n"
+    "                capture_output=True, text=True, timeout=10,\n"
+    "            )\n"
+    "            if _r.returncode == 0:\n"
+    "                _data = __import__(\"json\").loads(_r.stdout.strip())\n"
+    "                return _data.get(\"tenant_access_token\")\n"
+    "        except Exception as _e:\n"
+    "            __import__(\"logging\").getLogger(\"feishu\").debug(\n"
+    '                "[Feishu] Failed to get tenant token: %s", _e)\n'
+    "        return None\n"
+    "\n"
+    "    def _build_streaming_card(self, greeting: str, subtitle: str) -> dict:\n"
+    '        """Vertical layout streaming card. All element_ids are at body root level."""\n'
+    "        return {\n"
+    '            "schema": "2.0",\n'
+    "            \"config\": {\n"
+    '                "streaming_mode": True,\n'
+    '                "update_multi": True,\n'
+    '                "summary": {"content": "处理中..."},\n'
+    '                "streaming_config": {\n'
+    '                    "print_frequency_ms": {"default": 60, "android": 60, "ios": 60, "pc": 60},\n'
+    '                    "print_step": {"default": 2, "android": 2, "ios": 2, "pc": 2},\n'
+    '                    "print_strategy": "fast",\n'
+    "                },\n"
+    "            },\n"
+    "            \"header\": {\n"
+    '                "template": "indigo",\n'
+    '                "title": {"content": greeting, "tag": "plain_text"},\n'
+    '                "subtitle": {"content": f"{subtitle}  🤔思考中", "tag": "plain_text"},\n'
+    "            },\n"
+    "            \"body\": {\n"
+    '                "direction": "vertical",\n'
+    '                "padding": "10px 16px 10px 16px",\n'
+    '                "vertical_spacing": "6px",\n'
+    '                "elements": [\n'
+    '                    {"tag": "markdown", "element_id": "thinking_content",\n'
+    '                     "content": "⏳ 执行中，等待结果...",\n'
+    '                     "text_size": "normal", "text_align": "left",\n'
+    '                     "margin": "0px 0px 6px 0px"},\n'
+    '                    {"tag": "markdown", "element_id": "status_label",\n'
+    '                     "content": "🤔思考中", "text_size": "small",\n'
+    '                     "text_color": "grey", "margin": "0px 0px 2px 0px"},\n'
+    '                    {"tag": "markdown", "element_id": "tools_label",\n'
+    '                     "content": "🔧 工具调用 (0次)", "text_size": "small",\n'
+    '                     "text_color": "grey", "margin": "0px 0px 2px 0px"},\n'
+    '                    {"tag": "markdown", "element_id": "tools_body",\n'
+    '                     "content": "⏳ 等待开始...", "text_size": "x-small",\n'
+    '                     "text_color": "grey", "margin": "0px 0px 6px 0px"},\n'
+    '                    {"tag": "markdown", "element_id": "footer",\n'
+    '                     "content": "⏳ 执行中...", "text_size": "x-small",\n'
+    '                     "text_align": "left", "margin": "0px 0px 0px 0px"},\n'
+    "                ],\n"
+    "            },\n"
+    "        }\n"
+    "\n"
+    "    async def send_streaming_card(\n"
+    "        self, chat_id: str, greeting: str, subtitle: str, metadata: dict | None = None\n"
+    "    ) -> dict | None:\n"
+    '        """Create and send a Feishu streaming card. Returns card state on success."""\n'
+    "        try:\n"
+    "            import urllib.request\n"
+    "            import urllib.error\n"
+    "            card_payload = self._build_streaming_card(greeting, subtitle)\n"
+    "            token = self._get_tenant_access_token() or \"\"\n"
+    '            create_url = "https://open.feishu.cn/open-apis/cardkit/v1/cards"\n'
+    "            req = urllib.request.Request(\n"
+    "                create_url,\n"
+    "                data=__import__(\"json\").dumps(card_payload).encode(),\n"
+    "                headers={\n"
+    '                    "Authorization": f"Bearer {token}",\n'
+    '                    "Content-Type": "application/json",\n'
+    "                },\n"
+    "                method=\"POST\",\n"
+    "            )\n"
+    "            with urllib.request.urlopen(req, timeout=10) as resp:\n"
+    "                create_data = __import__(\"json\").loads(resp.read())\n"
+    "                if create_data.get(\"code\") != 0:\n"
+    "                    __import__(\"logging\").getLogger(\"feishu\").warning(\n"
+    '                        "[Feishu] CardKit create failed: %s", create_data)\n'
+    "                    return None\n"
+    "                card_id = create_data[\"data\"][\"card\"][\"card_id\"]\n"
+    "\n"
+    '            send_url = (\n'
+    '                "https://open.feishu.cn/open-apis/im/v1/messages"\n'
+    '                "?receive_id_type=chat_id"\n'
+    "            )\n"
+    "            msg_payload = __import__(\"json\").dumps({\n"
+    '                "receive_id": chat_id,\n'
+    '                "msg_type": "interactive",\n'
+    '                "content": __import__("json").dumps(card_payload),\n'
+    "            }).encode()\n"
+    "            send_req = urllib.request.Request(\n"
+    "                send_url, data=msg_payload,\n"
+    "                headers={\n"
+    '                    "Authorization": f"Bearer {token}",\n'
+    '                    "Content-Type": "application/json",\n'
+    "                },\n"
+    "                method=\"POST\",\n"
+    "            )\n"
+    "            with urllib.request.urlopen(send_req, timeout=10) as send_resp:\n"
+    "                send_data = __import__(\"json\").loads(send_resp.read())\n"
+    "                if send_data.get(\"code\") != 0:\n"
+    "                    __import__(\"logging\").getLogger(\"feishu\").warning(\n"
+    '                        "[Feishu] Card send failed: %s", send_data)\n'
+    "                    return None\n"
+    "                message_id = send_data[\"data\"][\"message_id\"]\n"
+    "\n"
+    "            initial_sequence = create_data[\"data\"][\"card\"].get(\"sequence\", 1)\n"
+    "            __import__(\"logging\").getLogger(\"feishu\").info(\n"
+    '                "[Feishu] send_streaming_card: card_id=%s message_id=%s seq=%s",\n'
+    "                card_id, message_id, initial_sequence)\n"
+    "            return {\n"
+    '                "card_id": card_id,\n'
+    '                "message_id": message_id,\n'
+    '                "sequence": initial_sequence,\n'
+    '                "tenant_token": token,\n'
+    "            }\n"
+    "        except Exception as e:\n"
+    "            __import__(\"logging\").getLogger(\"feishu\").error(\n"
+    '                "[Feishu] send_streaming_card error: %s", e, exc_info=True)\n'
+    "            return None\n"
+    "\n"
+    "    def _update_card_element(\n"
+    "        self, card_id: str, element_id: str, content: str,\n"
+    "        sequence: int, token: str,\n"
+    "    ) -> tuple:\n"
+    '        """Update a card element via CardKit API. Returns (success, next_sequence)."""\n'
+    "        try:\n"
+    "            import urllib.request\n"
+    "            import urllib.error\n"
+    "            fresh_token = self._get_tenant_access_token() or token\n"
+    "            payload = __import__(\"json\").dumps({\"content\": content}).encode()\n"
+    "            url = (\n"
+    '                f"https://open.feishu.cn/open-apis/cardkit/v1/cards/"\n'
+    '                f"{card_id}/elements/{element_id}/content"\n'
+    "            )\n"
+    "            req = urllib.request.Request(\n"
+    "                url, data=payload,\n"
+    "                headers={\n"
+    '                    "Authorization": f"Bearer {fresh_token}",\n'
+    '                    "Content-Type": "application/json",\n'
+    "                },\n"
+    "                method=\"PUT\",\n"
+    "            )\n"
+    "            with urllib.request.urlopen(req, timeout=10) as resp:\n"
+    "                data = __import__(\"json\").loads(resp.read())\n"
+    "                code = data.get(\"code\", -1)\n"
+    "                if code == 0:\n"
+    "                    next_seq = data.get(\"data\", {}).get(\"sequence\", sequence + 1)\n"
+    "                    return True, next_seq\n"
+    "                __import__(\"logging\").getLogger(\"feishu\").warning(\n"
+    '                    "[Feishu] _update_card_element element=%s ok=False code=%s msg=%s",\n'
+    "                    element_id, code, data.get(\"msg\", \"\"))\n"
+    "                return False, -1\n"
+    "        except Exception as e:\n"
+    "            __import__(\"logging\").getLogger(\"feishu\").warning(\n"
+    '                "[Feishu] _update_card_element element=%s error=%s", element_id, e)\n'
+    "        return False, -1\n"
+    "\n"
+    "    def set_streaming_greeting(self, greeting: str) -> None:\n"
+    '        """Set the greeting to display in the streaming card header."""\n'
+    "        self._pending_greeting = greeting\n"
+    "\n"
+    "    def set_streaming_model(self, model: str) -> None:\n"
+    '        """Set the model name to display in the streaming card subtitle."""\n'
+    "        self._pending_subtitle = model\n"
+    "\n"
+    "    def set_streaming_pending(self, chat_id: str) -> None:\n"
+    "        if not hasattr(self, \"_streaming_pending\"):\n"
+    "            self._streaming_pending = {}\n"
+    "        self._streaming_pending[chat_id] = True\n"
+    "\n"
+    "    def is_streaming_pending(self, chat_id: str) -> bool:\n"
+    "        return getattr(self, \"_streaming_pending\", {}).get(chat_id, False)\n"
+    "\n"
+    "    def clear_streaming_pending(self, chat_id: str) -> None:\n"
+    "        if hasattr(self, \"_streaming_pending\"):\n"
+    "            self._streaming_pending.pop(chat_id, None)\n"
+    "\n"
+    "    def clear_streaming_card(self, chat_id: str) -> None:\n"
+    "        self._streaming_card.pop(chat_id, None)\n"
+    "        self.clear_streaming_pending(chat_id)\n"
+    "\n"
+    "    def format_token(self, n: int) -> str:\n"
+    "        if n >= 1_000_000:\n"
+    "            s = f\"{n / 1_000_000:.1f}M\"\n"
+    "            return s.replace(\".0M\", \"M\")\n"
+    "        elif n >= 1_000:\n"
+    "            s = f\"{n / 1_000:.1f}K\"\n"
+    "            return s.replace(\".0K\", \"K\")\n"
+    "        return str(n)\n"
+    "\n"
+    "    def _build_footer(\n"
+    "        self, model: str, elapsed: float,\n"
+    "        in_t: int, out_t: int, cache_t: int,\n"
+    "        ctx_used: int, ctx_limit: int,\n"
+    "    ) -> str:\n"
+    "        if elapsed >= 60:\n"
+    "            m = int(elapsed // 60)\n"
+    "            s = int(elapsed % 60)\n"
+    "            elapsed_str = f\"{m}m{s}s\"\n"
+    "        else:\n"
+    "            elapsed_str = f\"{elapsed:.1f}s\"\n"
+    "        ctx_pct = ctx_used / ctx_limit * 100 if ctx_limit else 0\n"
+    "        parts = [\n"
+    "            f\"{elapsed_str}  ·  {self.format_token(in_t)}↑ / {self.format_token(out_t)}↓\",\n"
+    "        ]\n"
+    "        if cache_t > 0:\n"
+    "            cache_pct = cache_t / in_t * 100 if in_t else 0\n"
+    "            parts.append(f\"缓存 {self.format_token(cache_t)} ({cache_pct:.1f}%)\")\n"
+    "        parts.append(\n"
+    "            f\"上下文 {self.format_token(ctx_used)}/{self.format_token(ctx_limit)}\"\n"
+    "            f\" ({ctx_pct:.1f}%)\"\n"
+    "        )\n"
+    "        return \"  ·  \".join(parts)\n"
+    "\n"
+    "    async def finalize_streaming_card(\n"
+    "        self, chat_id: str, model: str, elapsed: float,\n"
+    "        in_t: int, out_t: int, cache_t: int,\n"
+    "        ctx_used: int, ctx_limit: int,\n"
+    "        result_summary: str = \"\",\n"
+    "    ) -> None:\n"
+    '        """Update streaming card to completed state. Caller holds the card lock."""\n'
+    "        state = self._streaming_card.get(chat_id)\n"
+    "        if not state:\n"
+    "            return\n"
+    "        greeting = state.get(\"_greeting\", \"主人，苏菲为您服务！\")\n"
+    "        tool_count = state.get(\"_tool_count\", 0)\n"
+    "        model = state.get(\"_model\", model)\n"
+    "        loop = asyncio.get_event_loop()\n"
+    "\n"
+    "        # ① status_label → completed\n"
+    "        _ok, _next_seq = await loop.run_in_executor(\n"
+    "            None, lambda: self._update_card_element(\n"
+    '                state["card_id"], "status_label", "✅已完成",\n'
+    "                state[\"sequence\"], state[\"tenant_token\"]))\n"
+    "        if _ok:\n"
+    "            state[\"sequence\"] = _next_seq\n"
+    "\n"
+    "        # ② thinking_content → result_summary (strip XML tags + Agent footer)\n"
+    "        summary = result_summary if result_summary else \"主人，任务已完成！\"\n"
+    "        summary = re.sub(r\"<think>.*?</think>\", \"\", summary, flags=re.DOTALL)\n"
+    '        summary = re.sub(r"<think>.*", "", summary, flags=re.DOTALL)\n'
+    "        summary = re.sub(r\"\\n?\\s*Agent\\s*·.*\", \"\", summary)\n"
+    "        summary = summary.strip()\n"
+    "        _ok, next_seq = await loop.run_in_executor(\n"
+    "            None, lambda: self._update_card_element(\n"
+    '                state["card_id"], "thinking_content",\n'
+    "                summary[:800] if summary else \"主人，任务已完成！\",\n"
+    "                state[\"sequence\"], state[\"tenant_token\"]))\n"
+    "        if _ok:\n"
+    "            state[\"sequence\"] = next_seq\n"
+    "\n"
+    "        # ③ tools_label → completion\n"
+    "        _ok, _next_seq = await loop.run_in_executor(\n"
+    "            None, lambda: self._update_card_element(\n"
+    '                state["card_id"], "tools_label",\n'
+    "                f\"🔧 工具调用 ({tool_count}次)  ✅完成\",\n"
+    "                state[\"sequence\"], state[\"tenant_token\"]))\n"
+    "        if _ok:\n"
+    "            state[\"sequence\"] = _next_seq\n"
+    "\n"
+    "        # ④ footer → token stats\n"
+    "        footer = self._build_footer(model, elapsed, in_t, out_t, cache_t, ctx_used, ctx_limit)\n"
+    "        _ok, _next_seq = await loop.run_in_executor(\n"
+    "            None, lambda: self._update_card_element(\n"
+    '                state["card_id"], "footer", footer,\n'
+    "                state[\"sequence\"], state[\"tenant_token\"]))\n"
+    "        if _ok:\n"
+    "            state[\"sequence\"] = _next_seq\n"
+    "\n"
+    "        state[\"finalized\"] = True\n"
+    "        state[\"finalize_ts\"] = __import__(\"time\").time()\n"
+    "        if not hasattr(self, \"_finalized_chats\"):\n"
+    "            self._finalized_chats = {}\n"
+    "        self._finalized_chats[chat_id] = {\n"
+    '            "ts": state["finalize_ts"],\n'
+    '            "card_id": state["card_id"],\n'
+    '            "message_id": state["message_id"],\n'
+    '            "tenant_token": state["tenant_token"],\n'
+    '            "sequence": state["sequence"],\n'
+    "        }\n"
+)
 
 
 # ─────────────────────────────────────────────────────────────────
 # Streaming routing code to prepend at the start of send()
-# This is version-aware and adapts to the Hermes structure
+# All lines are 16 spaces (proper function body level)
 # ─────────────────────────────────────────────────────────────────
 
-# The routing code to inject at the START of send() (after the docstring)
-# It wraps the entire original send() body in a conditional
-SEND_STREAMING_PRELUDE = '''
-        # ════════════════════════════════════════════════════════════════════
-        # Feishu Streaming Card routing (4 branches, per-chat Lock serialized)
-        # ════════════════════════════════════════════════════════════════════
-
-        # Emoji detection: first char of first line is emoji → tool progress
-        try:
-            import regex as _regex
-            _EMOJI_RE = _regex.compile(r"^[\\p{Emoji_Presentation}\\p{Extended_Pictographic}]")
-            _first_line = content.split("\\n")[0].strip() if content else ""
-            _match = _EMOJI_RE.match(_first_line) if _first_line else None
-            is_tool_progress = bool(_match and len(_first_line) < 200)
-        except Exception:
-            is_tool_progress = False
-
-        _has_card = chat_id in self._streaming_card
-
-        async with self._get_card_lock(chat_id):
-            _has_card = chat_id in self._streaming_card
-
-            # ── ① Has card + finalized → grace-period result write ─────────
-            if _has_card:
-                _state = self._streaming_card[chat_id]
-                if _state.get("finalized"):
-                    import time as _time
-                    _finfo = getattr(self, "_finalized_chats", {}).get(chat_id, {})
-                    _grace_start = _finfo.get("ts") or _state.get("finalize_ts", 0)
-                    if _time.time() - _grace_start < 60:
-                        _loop = asyncio.get_event_loop()
-                        _ok, _ns = await _loop.run_in_executor(
-                            None, lambda: self._update_card_element(
-                                _state["card_id"], "thinking_content",
-                                content[:800], _state["sequence"], _state["tenant_token"]))
-                        if _ok:
-                            _state["sequence"] = _ns
-                            self._streaming_card.pop(chat_id, None)
-                            self._finalized_chats.pop(chat_id, None)
-                    else:
-                        self._streaming_card.pop(chat_id, None)
-                        self._finalized_chats.pop(chat_id, None)
-                    return SendResult(success=True, message_id=_state["message_id"], card_id=_state["card_id"])
-
-            # ── ② Has card + non-emoji → update thinking_content (overwrite) ──
-            if _has_card and not is_tool_progress:
-                _st = self._streaming_card[chat_id]
-                if not _st.get("finalized"):
-                    _clean = content
-                    _clean = re.sub(r"<think>", "", _clean)
-                    _clean = re.sub(r"</think>", "", _clean)
-                    _clean = re.sub(r"(\\n)?\\s*Agent\\s*·.*", "", _clean)
-                    _clean = _clean.strip()
-                    if _clean:
-                        _loop = asyncio.get_event_loop()
-                        _ok, _ns = await _loop.run_in_executor(
-                            None, lambda: self._update_card_element(
-                                _st["card_id"], "thinking_content",
-                                _clean[:2000], _st["sequence"], _st["tenant_token"]))
-                        if _ok:
-                            _st["sequence"] = _ns
-                return SendResult(success=True, message_id=_st["message_id"], card_id=_st["card_id"])
-
-            # ── ③ First emoji tool → create streaming card ───────────────────
-            if is_tool_progress and not _has_card:
-                self._streaming_card.pop(chat_id, None)
-                self.set_streaming_pending(chat_id)
-
-                _greeting = (metadata.get("greeting") if metadata and metadata.get("greeting")
-                             else getattr(self, "_pending_greeting", _get_default_greeting()))
-                _model_name = (metadata.get("model") if metadata and metadata.get("model")
-                                else getattr(self, "_pending_subtitle", ""))
-
-                _state = await self.send_streaming_card(
-                    chat_id=chat_id, greeting=_greeting, subtitle=_model_name, metadata=metadata)
-                if _state:
-                    _state["_tool_count"] = 1
-                    _state["_tool_lines"] = [_first_line]
-                    _state["_model"] = _model_name
-                    _state["_greeting"] = _greeting
-                    self._streaming_card[chat_id] = _state
-                    self.clear_streaming_pending(chat_id)
-                    _loop = asyncio.get_event_loop()
-
-                    _lok, _lns = await _loop.run_in_executor(
-                        None, lambda: self._update_card_element(
-                            _state["card_id"], "status_label", "⚡执行中",
-                            _state["sequence"], _state["tenant_token"]))
-                    if _lok:
-                        _state["sequence"] = _lns
-
-                    _ok, _ns = await _loop.run_in_executor(
-                        None, lambda: self._update_card_element(
-                            _state["card_id"], "tools_body", f"⚙️ `{_first_line}`",
-                            _state["sequence"], _state["tenant_token"]))
-                    if _ok:
-                        _state["sequence"] = _ns
-                    return SendResult(success=True, message_id=_state["message_id"], card_id=_state["card_id"])
-
-                __import__("logging").getLogger("feishu").warning(
-                    "[Feishu] Streaming card creation failed, sending as normal message")
-
-            # ── ④ Has card + emoji → tool progress update ────────────────────
-            if _has_card and is_tool_progress:
-                _st = self._streaming_card[chat_id]
-                _tc = _st.get("_tool_count", 0) + 1
-                _tl = _st.get("_tool_lines", [])
-                if not _tl or _tl[-1] != _first_line:
-                    _tl.append(_first_line)
-                else:
-                    _tc = _st["_tool_count"]
-                _st["_tool_count"] = _tc
-                _st["_tool_lines"] = _tl
-                _loop = asyncio.get_event_loop()
-
-                _ok, _ns = await _loop.run_in_executor(
-                    None, lambda: self._update_card_element(
-                        _st["card_id"], "tools_label", f"🔧 工具调用 ({_tc}次)",
-                        _st["sequence"], _st["tenant_token"]))
-                if _ok:
-                    _st["sequence"] = _ns
-
-                _display, _seen = [], set()
-                for _l in _tl:
-                    if _l not in _seen:
-                        _display.append(_l)
-                        _seen.add(_l)
-                _display = _display[-8:]
-                _ok, _ns = await _loop.run_in_executor(
-                    None, lambda: self._update_card_element(
-                        _st["card_id"], "tools_body",
-                        "\\n".join([f"⚙️ `{l}`" for l in _display]),
-                        _st["sequence"], _st["tenant_token"]))
-                if _ok:
-                    _st["sequence"] = _ns
-                return SendResult(success=True, message_id=_st["message_id"], card_id=_st["card_id"])
-
-        # ── Normal send (no streaming card for this chat) ──────────────────
-        # Falls through to the original send() body below.
-        pass
-'''
+SEND_STREAMING_PRELUDE = (
+    "        # ════════════════════════════════════════════════════════════════════\n"
+    "        # Feishu Streaming Card routing (4 branches, per-chat Lock serialized)\n"
+    "        # ════════════════════════════════════════════════════════════════════\n"
+    "\n"
+    "        # Emoji detection: first char of first line is emoji → tool progress\n"
+    "        try:\n"
+    "            import regex as _regex\n"
+    "            _EMOJI_RE = _regex.compile(r\"^[\\p{Emoji_Presentation}\\p{Extended_Pictographic}]\")\n"
+    "            _first_line = content.split(\"\\n\")[0].strip() if content else \"\"\n"
+    "            _match = _EMOJI_RE.match(_first_line) if _first_line else None\n"
+    "            is_tool_progress = bool(_match and len(_first_line) < 200)\n"
+    "        except Exception:\n"
+    "            is_tool_progress = False\n"
+    "\n"
+    "        _has_card = chat_id in self._streaming_card\n"
+    "\n"
+    "        async with self._get_card_lock(chat_id):\n"
+    "            _has_card = chat_id in self._streaming_card\n"
+    "\n"
+    "            # ── ① Has card + finalized → grace-period result write ─────────\n"
+    "            if _has_card:\n"
+    "                _state = self._streaming_card[chat_id]\n"
+    "                if _state.get(\"finalized\"):\n"
+    "                    import time as _time\n"
+    "                    _finfo = getattr(self, \"_finalized_chats\", {}).get(chat_id, {})\n"
+    "                    _grace_start = _finfo.get(\"ts\") or _state.get(\"finalize_ts\", 0)\n"
+    "                    if _time.time() - _grace_start < 60:\n"
+    "                        _loop = asyncio.get_event_loop()\n"
+    "                        _ok, _ns = await _loop.run_in_executor(\n"
+    "                            None, lambda: self._update_card_element(\n"
+    '                                    _state["card_id"], "thinking_content",\n'
+    "                                content[:800], _state[\"sequence\"], _state[\"tenant_token\"]))\n"
+    "                        if _ok:\n"
+    "                            _state[\"sequence\"] = _ns\n"
+    "                            self._streaming_card.pop(chat_id, None)\n"
+    "                            self._finalized_chats.pop(chat_id, None)\n"
+    "                    else:\n"
+    "                        self._streaming_card.pop(chat_id, None)\n"
+    "                        self._finalized_chats.pop(chat_id, None)\n"
+    "                    return SendResult(success=True,\n"
+    '                                          message_id=_state["message_id"],\n'
+    '                                          card_id=_state["card_id"])\n'
+    "\n"
+    "            # ── ② Has card + non-emoji → update thinking_content (overwrite) ──\n"
+    "            if _has_card and not is_tool_progress:\n"
+    "                _st = self._streaming_card[chat_id]\n"
+    "                if not _st.get(\"finalized\"):\n"
+    "                    _clean = content\n"
+    "                    _clean = re.sub(r\"<think>\", \"\", _clean)\n"
+    "                    _clean = re.sub(r\"</think>\", \"\", _clean)\n"
+    "                    _clean = re.sub(r\"\\n?\\s*Agent\\s*·.*\", \"\", _clean)\n"
+    "                    _clean = _clean.strip()\n"
+    "                    if _clean:\n"
+    "                        _loop = asyncio.get_event_loop()\n"
+    "                        _ok, _ns = await _loop.run_in_executor(\n"
+    "                            None, lambda: self._update_card_element(\n"
+    '                                    _st["card_id"], "thinking_content",\n'
+    "                                _clean[:2000], _st[\"sequence\"], _st[\"tenant_token\"]))\n"
+    "                        if _ok:\n"
+    "                            _st[\"sequence\"] = _ns\n"
+    "                return SendResult(success=True,\n"
+    '                                      message_id=_st["message_id"],\n'
+    '                                      card_id=_st["card_id"])\n'
+    "\n"
+    "            # ── ③ First emoji tool → create streaming card ───────────────────\n"
+    "            if is_tool_progress and not _has_card:\n"
+    "                self._streaming_card.pop(chat_id, None)\n"
+    "                self.set_streaming_pending(chat_id)\n"
+    "\n"
+    "                _greeting = (metadata.get(\"greeting\") if metadata and metadata.get(\"greeting\")\n"
+    "                             else getattr(self, \"_pending_greeting\", _get_default_greeting()))\n"
+    "                _model_name = (metadata.get(\"model\") if metadata and metadata.get(\"model\")\n"
+    "                              else getattr(self, \"_pending_subtitle\", \"\"))\n"
+    "\n"
+    "                _state = await self.send_streaming_card(\n"
+    "                    chat_id=chat_id, greeting=_greeting, subtitle=_model_name, metadata=metadata)\n"
+    "                if _state:\n"
+    "                    _state[\"_tool_count\"] = 1\n"
+    "                    _state[\"_tool_lines\"] = [_first_line]\n"
+    "                    _state[\"_model\"] = _model_name\n"
+    "                    _state[\"_greeting\"] = _greeting\n"
+    "                    self._streaming_card[chat_id] = _state\n"
+    "                    self.clear_streaming_pending(chat_id)\n"
+    "                    _loop = asyncio.get_event_loop()\n"
+    "\n"
+    "                    _lok, _lns = await _loop.run_in_executor(\n"
+    "                        None, lambda: self._update_card_element(\n"
+    '                                _state["card_id"], "status_label", "⚡执行中",\n'
+    "                            _state[\"sequence\"], _state[\"tenant_token\"]))\n"
+    "                    if _lok:\n"
+    "                        _state[\"sequence\"] = _lns\n"
+    "\n"
+    "                    _ok, _ns = await _loop.run_in_executor(\n"
+    "                        None, lambda: self._update_card_element(\n"
+    '                                _state["card_id"], "tools_body",\n'
+    '                                f"⚙️ `{_first_line}`",\n'
+    "                            _state[\"sequence\"], _state[\"tenant_token\"]))\n"
+    "                    if _ok:\n"
+    "                        _state[\"sequence\"] = _ns\n"
+    "                    return SendResult(success=True,\n"
+    '                                          message_id=_state["message_id"],\n'
+    '                                          card_id=_state["card_id"])\n'
+    "\n"
+    "                __import__(\"logging\").getLogger(\"feishu\").warning(\n"
+    '                        "[Feishu] Streaming card creation failed, sending as normal message")\n'
+    "\n"
+    "            # ── ④ Has card + emoji → tool progress update ────────────────────\n"
+    "            if _has_card and is_tool_progress:\n"
+    "                _st = self._streaming_card[chat_id]\n"
+    "                _tc = _st.get(\"_tool_count\", 0) + 1\n"
+    "                _tl = _st.get(\"_tool_lines\", [])\n"
+    "                if not _tl or _tl[-1] != _first_line:\n"
+    "                    _tl.append(_first_line)\n"
+    "                else:\n"
+    "                    _tc = _st[\"_tool_count\"]\n"
+    "                _st[\"_tool_count\"] = _tc\n"
+    "                _st[\"_tool_lines\"] = _tl\n"
+    "                _loop = asyncio.get_event_loop()\n"
+    "\n"
+    "                _ok, _ns = await _loop.run_in_executor(\n"
+    "                    None, lambda: self._update_card_element(\n"
+    '                            _st["card_id"], "tools_label",\n'
+    "                        f\"🔧 工具调用 ({_tc}次)\",\n"
+    "                        _st[\"sequence\"], _st[\"tenant_token\"]))\n"
+    "                if _ok:\n"
+    "                    _st[\"sequence\"] = _ns\n"
+    "\n"
+    "                _display, _seen = [], set()\n"
+    "                for _l in _tl:\n"
+    "                    if _l not in _seen:\n"
+    "                        _display.append(_l)\n"
+    "                        _seen.add(_l)\n"
+    "                _display = _display[-8:]\n"
+    "                _ok, _ns = await _loop.run_in_executor(\n"
+    "                    None, lambda: self._update_card_element(\n"
+    '                            _st["card_id"], "tools_body",\n'
+    '                            "\\n".join([f"⚙️ `{l}`" for l in _display]),\n'
+    "                        _st[\"sequence\"], _st[\"tenant_token\"]))\n"
+    "                if _ok:\n"
+    "                    _st[\"sequence\"] = _ns\n"
+    "                return SendResult(success=True,\n"
+    '                                      message_id=_st["message_id"],\n'
+    '                                      card_id=_st["card_id"])\n'
+    "\n"
+    "        # ── Normal send (no streaming card for this chat) ──────────────────\n"
+    "        # Falls through to the original send() body below.\n"
+    "        pass\n"
+)
 
 
 # ─────────────────────────────────────────────────────────────────
 # Code to inject at the START of edit_message()
+# Indentation: 12 spaces
 # ─────────────────────────────────────────────────────────────────
 
-EDIT_MESSAGE_STREAMING_ROUTING = '''
-        # If streaming card is active for this chat, route ALL content to the card
-        if chat_id in self._streaming_card:
-            _st = self._streaming_card[chat_id]
-            if not _st.get("finalized"):
-                return await self.send(chat_id, content, reply_to=None, metadata=None)
-'''
+EDIT_MESSAGE_STREAMING_ROUTING = (
+    "        # If streaming card is active for this chat, route ALL content to the card\n"
+    "        if chat_id in self._streaming_card:\n"
+    "            _st = self._streaming_card[chat_id]\n"
+    "            if not _st.get(\"finalized\"):\n"
+    "                return await self.send(chat_id, content, reply_to=None, metadata=None)\n"
+)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -564,15 +563,12 @@ def detect_hermes_version(feishu_py_path: str) -> dict:
         r"async def send\([^)]+\)[^:]*:.*?formatted = self\.format_message",
         content, re.DOTALL))
 
-    # Line count as additional signal
-    line_count = content.count("\n")
-
     return {
         "status": "ok",
         "has_streaming_card": has_streaming,
         "has_early_return": has_early_return,
         "has_formatted_before_try": has_formatted_before_try,
-        "line_count": line_count,
+        "line_count": content.count("\n"),
     }
 
 
@@ -605,8 +601,6 @@ def apply_patch(feishu_py_path: str, hermes_dir: str) -> list:
         return results
 
     # ── 1. Inject streaming state into __init__ ──────────────────────
-    # Find the end of __init__ — last assignment + last method call
-    # Pattern: after "self._load_seen_message_ids()" or the last "self._xxx =" in __init__
     init_end_pattern = r"(self\._load_seen_message_ids\(\))\n(\n    @)"
     match = re.search(init_end_pattern, patched)
     if match:
@@ -614,7 +608,6 @@ def apply_patch(feishu_py_path: str, hermes_dir: str) -> list:
         patched = patched[:inj] + "\n" + STREAMING_STATE_INIT + "\n" + patched[inj:]
         changes.append("  ✓ Injected streaming card state into __init__")
     else:
-        # Fallback: after the last "self._approval_counter" line in __init__
         approval_match = re.search(
             r"(self\._approval_counter = itertools\.count\(\d+\))\n(\n    @staticmethod)",
             patched)
@@ -623,7 +616,7 @@ def apply_patch(feishu_py_path: str, hermes_dir: str) -> list:
             patched = patched[:inj] + "\n" + STREAMING_STATE_INIT + "\n" + patched[inj:]
             changes.append("  ✓ Injected streaming card state into __init__ (fallback)")
         else:
-            results.append(("FAIL", "Could not find __init__ injection point (tried _load_seen_message_ids and _approval_counter)"))
+            results.append(("FAIL", "Could not find __init__ injection point"))
             return results
 
     # ── 2. Inject streaming methods before send() ───────────────────
@@ -639,74 +632,113 @@ def apply_patch(feishu_py_path: str, hermes_dir: str) -> list:
     else:
         changes.append("  ℹ _get_card_lock already exists (skip)")
 
-    # ── 3. Patch send() — inject streaming routing at start ──────────
-    # Strategy: find "async def send(...):" and its docstring, then inject
-    # AFTER the docstring and any pre-processing (if not self._client, formatted = ...)
-    # The streaming routing should wrap the original body.
-    #
-    # We replace the entire body of send() by:
-    # 1. Finding the method signature + docstring
-    # 2. Finding the first "real" statement (if not self._client: or formatted = ...)
-    # 3. Replacing from there to the end of the method with: our routing + original body
-    #
-    # Approach: find the send() method, then inject routing code after docstring,
-    # and wrap original body in an else branch.
-
+    # ── 3. Patch send() — inject streaming routing after docstring ──────────
     if "Feishu Streaming Card routing" not in patched:
-        # Find send() method start
-        send_sig_match = re.search(
-            r"(\n    async def send\(\n        self,\n        chat_id: str,\n        content: str,\n        reply_to:[^)]+\)\s*(?:-> SendResult:)?\n)",
-            patched, re.DOTALL)
+        # Find the line that STARTS the send() method (the "async def send(" line)
+        send_def_match = re.search(r"\n    async def send\(\n        self,", patched)
+        if not send_def_match:
+            results.append(("FAIL", "Could not find 'async def send(self,' in feishu.py"))
+            return results
 
-        if not send_sig_match:
-            # Try a more relaxed pattern
-            send_sig_match = re.search(
-                r"(\n    async def send\(\n        self,[^)]+\)\s*(?:-> SendResult:)?\n)",
-                patched, re.DOTALL)
+        send_def_start = send_def_match.start()
 
-        if send_sig_match:
-            sig_end = send_sig_match.end()
-            # Find what comes immediately after the signature (docstring or first statement)
-            after_sig = patched[sig_end:]
+        # Find the end of the send() signature: the line that has "-> SendResult:" or just "):"
+        # and the next line starts the body (docstring or first statement)
+        # We look for the first line after the signature that starts at 16 spaces
+        # (which is the first body statement, like "if not self._client:" or the docstring)
+        rest = patched[send_def_start:]
+        lines = rest.split("\n")
+        # lines[0] = "    async def send(...)", lines[1+] = signature lines
+        # Find the closing of the signature:
+        sig_close_idx = None
+        for i, line in enumerate(lines[1:], start=1):
+            stripped = line.strip()
+            if stripped.startswith("-> ") or stripped == "):":
+                sig_close_idx = i
+                break
+            if stripped.startswith("metadata:") or "metadata" in stripped:
+                # metadata arg line
+                continue
+            if not line.strip() or line.strip().startswith("self,"):
+                continue
+            # Check if this is a arg line (starts with spaces, has type annotation)
+            if line.startswith("            ") and ":" in line:
+                continue
+            # If we see a line that's not an arg, it might be the closing
+            if "->" in line or line.strip() == "):": 
+                sig_close_idx = i
+                break
+            # Also check if the closing is on the same line as the last arg
+            if line.strip().endswith("):") or ("metadata" in line and "= None" in line):
+                sig_close_idx = i
+                break
 
-            # Check for docstring
-            docstring_match = re.match(r'(\s*"""[^"]*"""\n)', after_sig, re.DOTALL)
-            if docstring_match:
-                docstring_end = sig_end + docstring_match.end()
-                routing_code = SEND_STREAMING_PRELUDE.strip() + "\n        "
+        # More robust: find the line containing ")" that closes the signature
+        # followed by the return type annotation or just ":"
+        sig_pattern = re.search(
+            r"(\n    async def send\([\s\S]*?\)(?:\s*->\s*\w+:\s*))",
+            patched)
+        if not sig_pattern:
+            results.append(("FAIL", "Could not find send() signature end"))
+            return results
+
+        if send_def_match:
+            sig_end_pos = sig_pattern.end()
+
+            after_sig = patched[sig_end_pos:]
+
+            # Find the end of the first line in after_sig
+            # This handles both single-line docstrings (no indent) and body lines (8 spaces)
+            # We look for the next newline that ends the first content line
+            first_newline = after_sig.find('\n')
+            if first_newline == -1:
+                results.append(("FAIL", "Could not find body after send() signature"))
+                return results
+            first_line_end = sig_end_pos + first_newline
+            first_line_text = patched[sig_end_pos:first_line_end].strip()
+            stripped = first_line_text.strip()
+
+            if stripped.startswith('"""') and stripped.endswith('"""'):
+                # Single-line docstring — inject after its newline
                 patched = (
-                    patched[:docstring_end]
+                    patched[:first_line_end]
                     + "\n"
-                    + routing_code
-                    + patched[docstring_end:]
+                    + SEND_STREAMING_PRELUDE
+                    + patched[first_line_end:]
                 )
-                changes.append("  ✓ Patched send() with streaming routing (docstring variant)")
-            else:
-                # No docstring, inject right after signature
-                # Find the first non-empty line after signature
-                first_line_match = re.match(r"(\s*\S.*?\n)", after_sig)
-                if first_line_match:
-                    first_line_end = sig_end + first_line_match.end()
-                    routing_code = SEND_STREAMING_PRELUDE.strip() + "\n        "
-                    patched = (
-                        patched[:first_line_end]
-                        + "\n"
-                        + routing_code
-                        + patched[first_line_end:]
-                    )
-                    changes.append("  ✓ Patched send() with streaming routing (no-docstring variant)")
-                else:
-                    results.append(("FAIL", "Could not determine send() body structure"))
+                changes.append("  ✓ Patched send() with streaming routing (single-line docstring)")
+            elif stripped.startswith('"""'):
+                # Multi-line docstring start — find its end
+                end_triple = patched.find('"""', first_line_end)
+                if end_triple == -1:
+                    results.append(("FAIL", "Could not find docstring end"))
                     return results
+                # Find the newline after the closing """
+                doc_end = patched.find('\n', end_triple)
+                if doc_end == -1:
+                    results.append(("FAIL", "Could not find docstring end newline"))
+                    return results
+                patched = (
+                    patched[:doc_end + 1]
+                    + "\n"
+                    + SEND_STREAMING_PRELUDE
+                    + patched[doc_end + 1:]
+                )
+                changes.append("  ✓ Patched send() with streaming routing (multi-line docstring)")
+            else:
+                # No docstring — inject before the first body line
+                patched = (
+                    patched[:first_line_end]
+                    + "\n"
+                    + SEND_STREAMING_PRELUDE
+                    + patched[first_line_end:]
+                )
+                changes.append("  ✓ Patched send() with streaming routing (no docstring)")
         else:
             results.append(("FAIL", "Could not find send() signature pattern"))
             return results
-    else:
-        changes.append("  ℹ send() already has streaming routing (skip)")
-
     # ── 4. Patch edit_message() ──────────────────────────────────────
     if "If streaming card is active for this chat" not in patched:
-        # Find the docstring end of edit_message()
         edit_match = re.search(
             r"(\n    async def edit_message\(\n        self,\n        chat_id: str,\n        message_id: str,\n        content: str,\n    \) -> SendResult:\n        \"\"\"[^\"]*\"\"\")",
             patched, re.DOTALL)
@@ -715,16 +747,15 @@ def apply_patch(feishu_py_path: str, hermes_dir: str) -> list:
             patched = patched[:inj] + "\n" + EDIT_MESSAGE_STREAMING_ROUTING + patched[inj:]
             changes.append("  ✓ Patched edit_message() with streaming routing")
         else:
-            # Try simpler pattern
             edit_match2 = re.search(
                 r"(\n    async def edit_message\([^)]+\)[^:]*:\n        \"\"\"[^\"]*\"\"\")",
                 patched, re.DOTALL)
             if edit_match2:
                 inj = edit_match2.end()
                 patched = patched[:inj] + "\n" + EDIT_MESSAGE_STREAMING_ROUTING + patched[inj:]
-                changes.append("  ✓ Patched edit_message() with streaming routing (relaxed pattern)")
+                changes.append("  ✓ Patched edit_message() (relaxed pattern)")
             else:
-                changes.append("  ⚠ Could not find edit_message() docstring — skipping (non-critical)")
+                changes.append("  ⚠ edit_message() not patched (non-critical)")
     else:
         changes.append("  ℹ edit_message() already has streaming routing (skip)")
 
