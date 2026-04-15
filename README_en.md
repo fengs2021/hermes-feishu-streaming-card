@@ -19,27 +19,12 @@ Adds Feishu/Lark streaming card support to [Hermes Gateway](https://github.com/j
 
 ## Preview
 
-```
-┌─────────────────────────────────────────┐
-│  主人，苏菲为您服务！                    │  ← Header title (customizable)
-│  MiniMax-M2.7  🤔思考中                 │  ← Model + status
-├─────────────────────────────────────────┤
-│  用户想了解可灵AI的关键信息...          │  ← AI thinking (typewriter)
-│                                         │
-│  🤔思考中                                │  ← Status label
-│  🔧 工具调用 (1次)                       │  ← Tool count
-│  ⚙️ mcp_tavily_search: "可灵AI 2026"  │  ← Tool log
-│                                         │
-│  3.2s  ·  4.5K↑ / 2.1K↓  ·  上下文... │  ← Token stats
-└─────────────────────────────────────────┘
-          ↓ after completion
-┌─────────────────────────────────────────┐
-│  ✅已完成                                │  ← Status updated
-│  可灵AI（Kling AI）是快手旗下...        │  ← Result summary
-│  🔧 工具调用 (1次)  ✅完成              │
-│  3.2s  ·  4.5K↑ / 2.1K↓  ·  上下文... │
-└─────────────────────────────────────────┘
-```
+| Thinking | Completed |
+|---|---|
+| ![Thinking](thinking.png) | ![Ending](ending.png) |
+
+**Thinking** — Typewriter effect streaming AI reasoning, tool calls tracking in progress
+**Completed** — Status switches to ✅, shows result summary and full token stats
 
 ---
 
