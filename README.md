@@ -91,20 +91,24 @@
 ### 4. 启用 CardKit
 → 应用 → **添加应用能力** → 搜索 **CardKit** → 开启
 
-### 5. 配置 lark-cli（token 获取工具）
-流式卡片通过 `lark-cli` 获取 tenant access token，需提前配置好：
+### 5. 安装并配置 lark-cli（必需）
+
+流式卡片每次更新卡片内容都需要 fresh tenant_access_token，必须通过 lark-cli 获取。
 
 ```bash
-# 检查是否已安装
-which lark-cli || npm list -g | grep lark-cli
+# 安装
+npm install -g @larksuite/oapi-cli
 
-# 登录认证
+# 认证（交互式）
 lark-cli auth login
 
 # 验证可用
 lark-cli api POST /open-apis/auth/v3/tenant_access_token/internal \
   --data '{"app_id":"你的app_id","app_secret":"你的app_secret"}'
+# 期望返回 {"code": 0, "tenant_access_token": "..."}
 ```
+
+> 注意：lark-cli 认证状态需要持久化。重启机器后可能需要重新 `lark-cli auth login`。
 
 ### 快速检查清单
 
@@ -112,7 +116,7 @@ lark-cli api POST /open-apis/auth/v3/tenant_access_token/internal \
 - [ ] `im:message` + `cardkit:card` 权限已申请并审核通过
 - [ ] WebSocket 长连接模式已开启
 - [ ] CardKit 能力已添加
-- [ ] `lark-cli auth login` 已完成
+- [ ] `lark-cli` 已安装并 `lark-cli auth login` 完成
 - [ ] `.env` 中 `FEISHU_APP_ID` + `FEISHU_APP_SECRET` 已配置
 
 ---

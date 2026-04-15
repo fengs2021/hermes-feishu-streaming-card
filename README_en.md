@@ -89,20 +89,24 @@ Go to [Feishu Open Platform](https://open.feishu.cn/) → your app → **Add App
 ### 4. Enable CardKit
 → App → **Add App Capability** → search **CardKit** → enable
 
-### 5. Configure lark-cli (Token Generation Tool)
-The streaming card uses `lark-cli` to obtain tenant access token:
+### 5. Install and configure lark-cli（Required）
+
+The streaming card needs a fresh tenant_access_token for every card update, obtained via lark-cli.
 
 ```bash
-# Check if installed
-which lark-cli || npm list -g | grep lark-cli
+# Install
+npm install -g @larksuite/oapi-cli
 
-# Authenticate
+# Authenticate (interactive)
 lark-cli auth login
 
 # Verify
 lark-cli api POST /open-apis/auth/v3/tenant_access_token/internal \
   --data '{"app_id":"your_app_id","app_secret":"your_app_secret"}'
+# Expected: {"code": 0, "tenant_access_token": "..."}
 ```
+
+> Note: lark-cli auth state is persistent. After a machine restart you may need to re-run `lark-cli auth login`.
 
 ### Quick Checklist
 
@@ -110,7 +114,7 @@ lark-cli api POST /open-apis/auth/v3/tenant_access_token/internal \
 - [ ] `im:message` + `cardkit:card` permissions approved
 - [ ] WebSocket long connection mode enabled
 - [ ] CardKit capability added
-- [ ] `lark-cli auth login` completed
+- [ ] `lark-cli` installed and `lark-cli auth login` completed
 - [ ] `FEISHU_APP_ID` + `FEISHU_APP_SECRET` in `.env`
 
 ---
