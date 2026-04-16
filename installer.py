@@ -207,11 +207,11 @@ run_patched_ok = False
 
 # ── 1. Check injection points in feishu.py (no side effects) ─────
 try:
-    has_streaming = (
-        "def send_streaming_card" in feishu_content
-        and "_streaming_card" in feishu_content
-        and "Feishu Streaming Card" in feishu_content
-    )
+    # Use "routing" as the primary check — it's only present when BOTH __init__
+    # state AND the full routing block are injected.  Using "def send_streaming_card"
+    # alone is insufficient because the method may be present while the routing call
+    # in send() is missing (e.g. after a partial restore from an old backup).
+    has_streaming = "Feishu Streaming Card routing" in feishu_content
     if has_streaming:
         notes.append("feishu.py: already has streaming card (skip)")
     else:
@@ -496,7 +496,8 @@ def do_check(hermes_dir: str) -> None:
         ("feishu.py: streaming state init",
          "_streaming_card" in feishu_content and "self._streaming_card:" in feishu_content),
         ("feishu.py: send_streaming_card method", "def send_streaming_card" in feishu_content),
-        ("feishu.py: streaming routing in send()", "Streaming card routing" in feishu_content),
+        ("feishu.py: full streaming card installed",
+         "Feishu Streaming Card routing" in feishu_content),
         ("feishu.py: streaming routing in edit_message()", "If streaming card is active for this chat" in feishu_content),
         ("feishu.py: _get_card_lock method", "def _get_card_lock" in feishu_content),
         ("feishu.py: finalize_streaming_card method", "def finalize_streaming_card" in feishu_content),
