@@ -36,7 +36,24 @@
 
 ---
 
+## 效果预览
+
+| 思考中 | 已完成 |
+|---|---|
+| ![Thinking](thinking.png) | ![Ending](ending.png) |
+
+**思考中** — 打字机效果实时展示 AI 推理过程，工具调用追踪中
+**已完成** — 状态切换为 ✅，展示结果摘要和完整 token 统计
+
+---
+
 ## 更新日志
+
+### v2.1.0 (2026-04-16)
+#### 文档更新
+- 📋 **CardKit Token 获取详解**：补充 lark-cli 认证流程、token 刷新机制、常见错误处理
+- 📋 **飞书 Bot 权限配置清单**：表格化快速检查清单，开通步骤一目了然
+- 📋 **从飞书 CLI 安装**：独立章节强调 lark-cli 为必装依赖，提供完整认证命令
 
 ### v2.0.0 (2026-04-16)
 #### 核心改进
@@ -59,10 +76,6 @@
 - 🐛 run_patch.py 注入点修复
 - 🐛 installer 误判"已安装"逻辑修复：改用 `"Feishu Streaming Card routing"` 强判断，防止半注入状态被跳过
 
-#### 文档更新
-- 📋 **Bot 权限配置**: 明确 CardKit、lark-cli（必装）、WebSocket 长连接模式的配置步骤
-- ⚠️ **lark-cli 必装说明**: 澄清 lark-cli 是必需依赖而非可选，重启后需重新认证
-
 ### v1.1.0 (2026-04-15)
 - ✨ **支持最新版 Hermes** (commit `da8bab7`): 重写 patch 引擎，适配 NousResearch/hermes-agent 最新版代码结构 (send() 方法签名变化)
 - 🔧 **版本自动检测**: `installer.py --check` 自动识别目标 Hermes 版本，已安装则跳过
@@ -71,17 +84,6 @@
 ### v1.0.0 (2026-04-15)
 - 🎉 首发版本
 - 流式打字机卡片、工具调用追踪、Token 统计 footer
-
----
-
-## 效果预览
-
-| 思考中 | 已完成 |
-|---|---|
-| ![Thinking](thinking.png) | ![Ending](ending.png) |
-
-**思考中** — 打字机效果实时展示 AI 推理过程，工具调用追踪中
-**已完成** — 状态切换为 ✅，展示结果摘要和完整 token 统计
 
 ---
 
@@ -96,12 +98,28 @@
 
 ## 飞书 Bot 权限配置
 
-流式卡片依赖飞书 CardKit API 和 IM 消息接口，Bot 需要以下权限：
+流式卡片依赖飞书 CardKit API 和 IM 消息接口，Bot 需要以下权限和配置。
+
+### 快速检查清单
+
+| 步骤 | 操作 | 状态 |
+|------|------|------|
+| 1 | 开通 Bot 能力 | ⬜ |
+| 2 | 申请 `im:message` + `im:message:send_as_bot` + `cardkit:card` 权限 | ⬜ |
+| 3 | 开启 WebSocket 长连接模式 | ⬜ |
+| 4 | 添加 CardKit 应用能力 | ⬜ |
+| 5 | 安装并认证 lark-cli（必装） | ⬜ |
+| 6 | 在 `.env` 中配置 `FEISHU_APP_ID` + `FEISHU_APP_SECRET` | ⬜ |
+
+---
 
 ### 1. 开通 Bot 能力
+
 在 [飞书开放平台](https://open.feishu.cn/) → 你的应用 → **添加应用能力** → 选 **机器人**
 
-### 2. 配置权限（订阅消息 → 权限管理）
+### 2. 配置权限
+
+进入 **订阅消息 → 权限管理**，申请以下权限：
 
 | 权限 | 用途 |
 |---|---|
@@ -110,59 +128,137 @@
 | `cardkit:card` | 创建和更新 CardKit 卡片 |
 | `tenant_access_token` | 调用 APIs 获取 tenant access token |
 
+> 权限申请后需要等待审核通过（通常几分钟~几小时）。
+
 ### 3. 开启长连接模式
+
 → 应用 → **消息订阅** → 订阅方式 → 选 **长连接（WebSocket）**
 
 ### 4. 启用 CardKit
+
 → 应用 → **添加应用能力** → 搜索 **CardKit** → 开启
 
-### 5. 安装并配置 lark-cli（必需）
+### 5. 安装并认证 lark-cli（⭐ 必装）
 
-流式卡片每次更新卡片内容都需要 fresh tenant_access_token，必须通过 lark-cli 获取。
+流式卡片每次更新卡片内容都需要 fresh `tenant_access_token`，必须通过 lark-cli 获取。
 
 ```bash
-# 安装
+# 安装 lark-cli（全局）
 npm install -g @larksuite/oapi-cli
 
-# 认证（交互式）
+# 认证（交互式，需要 App ID 和 App Secret）
 lark-cli auth login
-
-# 验证可用
-lark-cli api POST /open-apis/auth/v3/tenant_access_token/internal \
-  --data '{"app_id":"你的app_id","app_secret":"你的app_secret"}'
-# 期望返回 {"code": 0, "tenant_access_token": "..."}
 ```
 
-> 注意：lark-cli 认证状态需要持久化。重启机器后可能需要重新 `lark-cli auth login`。
+认证过程会提示输入：
+```
+? App ID: cli_xxxxxxxxxxxxxxxx
+? App Secret: [hidden]
+```
 
-### 快速检查清单
+**App ID 和 App Secret 获取位置**：
+- 飞书开放平台 → 你的应用 → **凭证与基础信息** → `App ID` 和 `App Secret`
 
-- [ ] 机器人能力已开通
-- [ ] `im:message` + `cardkit:card` 权限已申请并审核通过
-- [ ] WebSocket 长连接模式已开启
-- [ ] CardKit 能力已添加
-- [ ] `lark-cli` 已安装并 `lark-cli auth login` 完成
-- [ ] `.env` 中 `FEISHU_APP_ID` + `FEISHU_APP_SECRET` 已配置
+### 6. 验证 lark-cli 认证成功
+
+```bash
+lark-cli api POST /open-apis/auth/v3/tenant_access_token/internal \
+  --data '{"app_id":"你的app_id","app_secret":"你的app_secret"}'
+```
+
+期望返回：
+```json
+{
+  "code": 0,
+  "tenant_access_token": "t-token-xxxxxxxxxxxx",
+  "expire": 3600
+}
+```
+
+> ⚠️ `tenant_access_token` 有效期为 **2 小时**，重启机器后需要重新 `lark-cli auth login`。
+
+---
+
+## CardKit Token 获取详解
+
+流式卡片的核心机制：
+
+```
+用户发消息 → run.py 立即创建卡片 → AI 思考过程逐字更新到卡片 → Agent 完成卡片固定
+```
+
+每次更新卡片内容（thinking_content、tools_body 等）都需要调用飞书 CardKit API：
+
+```
+PUT https://open.feishu.cn/open-apis/cardkit/v1/cards/{card_id}
+Authorization: Bearer {tenant_access_token}
+```
+
+### Token 获取方式（通过 lark-cli）
+
+```bash
+# 方式一：交互式（安装时推荐）
+lark-cli auth login
+
+# 方式二：直接调用验证
+lark-cli api POST /open-apis/auth/v3/tenant_access_token/internal \
+  --data '{"app_id":"你的app_id","app_secret":"你的app_secret"}'
+```
+
+返回的 `tenant_access_token` 会缓存在 `~/.lark-cli/auth.json`（Linux/Mac）或 `%USERPROFILE%\.lark-cli\auth.json`（Windows），后续调用自动使用。
+
+### Token 刷新机制
+
+| 情况 | 处理方式 |
+|------|---------|
+| token 过期（2小时） | 重新 `lark-cli auth login` |
+| 重启机器后 | 重新 `lark-cli auth login` |
+| 认证文件被删除 | 重新 `lark-cli auth login` |
+
+### 常见认证错误
+
+| 错误信息 | 原因 | 解决方法 |
+|----------|------|----------|
+| `401 Unauthorized` | App ID 或 App Secret 错误 | 检查凭证是否正确 |
+| `403 Forbidden` | Bot 权限不足 | 确认 `cardkit:card` 权限已审核通过 |
+| `无效的token` | token 过期 | 重新 `lark-cli auth login` |
+| `command not found: lark-cli` | 安装失败 | `npm install -g @larksuite/oapi-cli` 重装 |
 
 ---
 
 ## 安装
 
-### 一步安装
+### 从 GitHub 拉取（推荐）
 
 ```bash
+# 1. 克隆项目
+git clone https://github.com/baileyh8/hermes-feishu-streaming-card.git ~/github/hermes-feishu-streaming-card
+
+# 2. 进入目录
 cd ~/github/hermes-feishu-streaming-card
+
+# 3. 安装依赖
 pip install -r requirements.txt
-python installer.py --greeting "你的自定义问候语"
+
+# 4. 一键安装
+python installer.py --greeting "主人，苏菲为您服务！"
+
+# 5. 重启 Hermes Gateway
+cd ~/.hermes/hermes-agent && source venv/bin/activate
+python -m hermes_cli.main gateway restart
 ```
 
 `--hermes-dir` 可指定 hermes-agent 路径（默认：`~/.hermes/hermes-agent`）。
 
-安装时会自动：
-1. 校验 Hermes 代码结构和注入点
-2. 备份当前 feishu.py / run.py 到 `~/.hermes/hermes-agent/.fsc_backups/`
-3. 写入补丁
-4. 语法检查
+安装流程（5步自动完成）：
+
+| 步骤 | 内容 |
+|------|------|
+| 1/5 | 检查 prerequisites（pyyaml、regex） |
+| 2/5 | 预检验证（注入点 + 语法检查） |
+| 3/5 | 自动备份 feishu.py / run.py |
+| 4/5 | 写入补丁 |
+| 5/5 | 语法检查确认 |
 
 ### Dry-run（不写入）
 
@@ -193,12 +289,11 @@ python installer.py --uninstall
 python installer.py --restore 20260416_085616
 
 # 恢复后重启生效
-cd ~/.hermes/hermes-agent
-source venv/bin/activate
+cd ~/.hermes/hermes-agent && source venv/bin/activate
 python -m hermes_cli.main gateway restart
 ```
 
-备份存储在 `~/.hermes/hermes-agent/.fsc_backups/{timestamp}/`，保留最近 5 份，每次安装自动触发。手动备份不会自动清理。
+备份存储在 `~/.hermes/hermes-agent/.fsc_backups/{timestamp}/`，保留最近 5 份，每次安装自动触发。
 
 ---
 
@@ -275,7 +370,7 @@ Agent 完成 → finalize_streaming_card()
 hermes-feishu-streaming-card/
 ├── README.md                    # 本文件（中文）
 ├── README_en.md                 # English version
-├── installer.py                 # 一键安装脚本
+├── installer.py                 # 一键安装脚本（v2.0.0）
 ├── requirements.txt             # Python 依赖
 ├── config.yaml.example          # 配置示例
 └── patch/
@@ -297,10 +392,8 @@ source venv/bin/activate
 python -m hermes_cli.main gateway start 2>&1
 ```
 
-**常见报错及处理：**
-
 | 报错信息 | 原因 | 处理办法 |
-|---------|------|---------|
+|----------|------|----------|
 | `IndentationError` | 补丁注入后有缩进错误 | `python installer.py --restore` 恢复备份，然后重装 |
 | `SyntaxError` | feishu.py / run.py 语法错误 | `python installer.py --check` 检查，或恢复备份 |
 | `ModuleNotFoundError: No module named 'xxx'` | 缺少依赖包 | `pip install -r ~/github/hermes-feishu-streaming-card/requirements.txt` |
@@ -311,7 +404,6 @@ python -m hermes_cli.main gateway start 2>&1
 ```bash
 cd ~/github/hermes-feishu-streaming-card
 python installer.py --uninstall    # 从最新备份恢复
-# 然后重启
 cd ~/.hermes/hermes-agent && source venv/bin/activate
 python -m hermes_cli.main gateway restart
 ```
@@ -329,9 +421,11 @@ tail -f ~/.hermes/logs/agent.log | grep -i "feishu\|streaming\|card"
 ```
 
 ### Sequence 冲突错误（300317）？
+
 确保 hermes-agent 是最新版本，旧版本可能缺少必要的锁机制。
 
 ### 卡片标题/状态不更新？
+
 检查飞书 Bot 是否使用 WebSocket 长连接模式（WS 模式才支持 CardKit 更新）。
 
 ---
