@@ -345,7 +345,8 @@ class CardKitClient:
         }
 
     def _build_footer(self, tokens: Dict[str, int], duration: float,
-                       thinking_start: Optional[float] = None) -> str:
+                       thinking_start: Optional[float] = None,
+                       model: str = "minimax-M2.7") -> str:
         """构建 footer 文本内容（支持多种 token 格式）"""
         import time as _time
         now = _time.time()
@@ -365,6 +366,14 @@ class CardKitClient:
                     return 0
             return int(val) if isinstance(val, (int, float, str)) else 0
 
+        # 格式化数字（超过1000用k，超过1000000用m）
+        def format_num(n: int) -> str:
+            if n >= 1000000:
+                return f"{n/1000000:.1f}m".rstrip('0').rstrip('.')
+            elif n >= 1000:
+                return f"{n/1000:.1f}k".rstrip('0').rstrip('.')
+            return str(n)
+
         # 尝试多种 key 组合
         input_toks = (
             get_token_value('usage.prompt_tokens') or
@@ -382,11 +391,20 @@ class CardKitClient:
             tokens.get('completion_tokens') or
             0
         )
+        cache_read = (
+            get_token_value('usage.cache_read_tokens') or
+            tokens.get('cache_read_tokens') or
+            0
+        )
         total_toks = input_toks + output_toks
 
+        # 计算上下文百分比（假设上下文窗口 204k）
+        ctx_window = 204800  # 假设 204k 上下文窗口
+        ctx_pct = min(100, int((input_toks + cache_read) / ctx_window * 100)) if input_toks else 0
+
         return (
-            f"🔢 **Token**: {input_toks}↑ / {output_toks}↓ | ⏱️ {elapsed}s | "
-            f"💰 总计 {total_toks}"
+            f"{model}  ⏱️ {elapsed}s  {format_num(input_toks)}↑  {format_num(output_toks)}↓  "
+            f"ctx {format_num(input_toks + cache_read)}/{format_num(ctx_window)}  {ctx_pct}%"
         )
 
     def _build_settings(self, config: Dict[str, Any]) -> str:
@@ -500,7 +518,8 @@ class CardKitClient:
                                    tokens: Dict[str, int], duration: float,
                                    thinking_start: Optional[float] = None,
                                    api_calls: int = 0,
-                                   tool_calls: List[str] = None) -> None:
+                                   tool_calls: List[str] = None,
+                                   model: str = 'minimax-M2.7') -> None:
         """
         通过 IM API PATCH 最终化卡片消息。
 
@@ -513,7 +532,7 @@ class CardKitClient:
             api_calls: API 调用次数
             tool_calls: 实际调用的工具名称列表
         """
-        footer_text = self._build_footer(tokens, duration, thinking_start)
+        footer_text = self._build_footer(tokens, duration, thinking_start, model='minimax-M2.7')
 
         # 构建工具调用摘要（匹配旧版本格式）
         tool_elements = []
@@ -545,7 +564,7 @@ class CardKitClient:
                     {'tag': 'hr', 'element_id': 'divider'},
                 ] + tool_elements + [
                     {'tag': 'markdown', 'element_id': 'footer',
-                     'content': footer_text},
+                     'content': footer_text, 'text_size': 'x-small'},
                 ],
             },
         }
@@ -625,7 +644,7 @@ class CardKitClient:
         import uuid
 
         # 构建最终内容（含 footer 统计）
-        footer_text = self._build_footer(tokens, duration, thinking_start)
+        footer_text = self._build_footer(tokens, duration, thinking_start, model='minimax-M2.7')
         full_content = f"{final_content}\n\n---\n{footer_text}"
 
         # 构建最终卡片内容

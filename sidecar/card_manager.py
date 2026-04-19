@@ -211,10 +211,10 @@ class CardManager:
             buffer_len = len(info.thinking_buffer)
 
             # 触发条件：尽快刷新形成打字机效果，优先在完整句子后刷新
-            has_complete_thought = buffer_len >= 100 and self._has_sentence_end(info.thinking_buffer)
+            has_complete_thought = buffer_len >= 50 and self._has_sentence_end(info.thinking_buffer)
             needs_flush = (
-                time_elapsed >= 5.0 or                      # 超过 5 秒才刷新
-                buffer_len >= 500 or                         # 积累 500+ 字符时刷新
+                time_elapsed >= 2.0 or                      # 超过 2 秒刷新
+                buffer_len >= 300 or                         # 积累 300+ 字符时刷新
                 has_complete_thought                          # 有完整句子时刷新
             )
 
@@ -442,6 +442,7 @@ class CardManager:
                     thinking_start=thinking_start,
                     api_calls=api_calls,
                     tool_calls=tool_calls,
+                    model='minimax-M2.7',
                 )
                 logger.warning(f"[CardManager] on_finish: finalize done")
 
