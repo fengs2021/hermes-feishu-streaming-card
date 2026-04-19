@@ -2,7 +2,7 @@
 
 为 [Hermes Gateway](https://github.com/joeynyc/hermes-agent) 添加飞书流式卡片消息支持。发消息给机器人后，卡片以打字机效果实时展示 AI 思考过程、工具调用和任务结果。
 
-> English version: [README_en.md](README_en.md)
+> **⚠️ 使用风险**：本工具修改 Hermes Gateway 文件（事件转发逻辑，约 50 行）。虽然 sidecar 模式已做进程隔离，但任何第三方修改都存在风险。建议在非生产环境先测试。
 
 ---
 
@@ -12,7 +12,7 @@
 |---|---|
 | ![Thinking](thinking.png) | ![Ending](ending.png) |
 
-**思考中** — 打字机效果实时展示 AI 推理过程，工具调用追踪中
+**思考中** — 打字机效果实时展示 AI 推理过程，工具调用追踪
 **已完成** — 状态切换为 ✅，展示结果摘要和完整 token 统计
 
 ---
@@ -46,50 +46,66 @@ Feishu Streaming Sidecar（独立进程）
 飞书卡片
 ```
 
-| 对比 | Legacy (v2.0) | Sidecar (v2.1+) |
-|------|---------------|------------------|
-| Gateway 侵入性 | 高（直接修改源码） | 极低（仅事件转发） |
-| 进程隔离 | 否 | ✅ 是 |
-| 升级影响 | 需重注入 | 不影响 |
-| 回滚难度 | 中 | 极易 |
+**对 Hermes 的修改**：仅在 `gateway/platforms/feishu_forward.py` 添加事件转发（约 50 行），不做核心代码修改。
 
 ---
 
 ## 📋 环境要求
 
-- **Python**: 3.9+
-- **Hermes**: 已安装并配置好（支持 WS 长连接模式）
-- **飞书 Bot**: 已开通机器人能力 + CardKit 应用
-- **Node.js**: 18+（用于 lark-cli）
-- **lark-cli**: `@larksuite/oapi-cli`（用于获取 tenant token）
+| 要求 | 版本 | 说明 |
+|------|------|------|
+| Python | 3.9+ | Sidecar 运行环境 |
+| Hermes Gateway | 最新版 | 已安装并配置好 WS 长连接 |
+| 飞书 Bot | - | 已开通机器人能力 + CardKit |
+| Node.js | 18+ | 用于 lark-cli 获取 token |
+| lark-cli | `@larksuite/oapi-cli` | 必装，用于获取 tenant token |
 
 ---
 
-## 🚀 快速部署
+## 🚀 部署步骤
 
-### 1. 克隆项目
+### 第一步：克隆项目
 
 ```bash
 git clone https://github.com/baileyh8/hermes-feishu-streaming-card.git ~/github/hermes-feishu-streaming-card
 cd ~/github/hermes-feishu-streaming-card
 ```
 
-### 2. 安装依赖
+### 第二步：安装 Python 依赖
 
 ```bash
 pip install -r requirements.txt
-npm install -g @larksuite/oapi-cli
 ```
 
-### 3. 配置飞书 Bot
+### 第三步：安装并认证 lark-cli
 
-参考 [飞书配置指南](#飞书配置指南)，完成：
-- 开通 Bot 能力
-- 申请权限（`im:message`, `cardkit:card` 等）
-- 开启 WebSocket 长连接模式
-- 认证 lark-cli
+```bash
+# 安装
+npm install -g @larksuite/oapi-cli
 
-### 4. 一键安装 Sidecar 模式
+# 认证（交互式）
+lark-cli auth login
+```
+
+认证需要：
+- **App ID**: 飞书开放平台 → 你的应用 → 凭证与基础信息
+- **App Secret**: 同上位置
+
+### 第四步：配置飞书 Bot
+
+在 [飞书开放平台](https://open.feishu.cn/) 完成：
+
+1. **开通机器人能力**：添加应用能力 → 选机器人
+2. **申请权限**：
+   - `im:message` — 发送卡片消息
+   - `im:message:send_as_bot` — 以机器人身份发消息
+   - `cardkit:card` — 创建和更新卡片
+3. **开启长连接**：消息订阅 → 订阅方式 → 长连接（WebSocket）
+4. **启用 CardKit**：添加应用能力 → 搜索 CardKit → 开启
+
+> ⚠️ 权限申请后需等待审核通过（通常几分钟~几小时）
+
+### 第五步：一键安装 Sidecar
 
 ```bash
 cd ~/github/hermes-feishu-streaming-card
@@ -100,11 +116,25 @@ python installer_v2.py --mode sidecar
 1. 检查环境依赖
 2. 备份现有配置
 3. 安装 sidecar 到 `~/.hermes/feishu-sidecar/`
-4. 修改 gateway 事件转发（<50 行）
+4. 修改 gateway 事件转发（约 50 行）
 5. 启动 sidecar 服务
 6. 验证运行状态
 
-### 5. 启动/重启 Gateway
+### 第六步：配置 Gateway
+
+在 `~/.hermes/hermes-agent/config.yaml` 中添加：
+
+```yaml
+feishu_streaming_card:
+  enabled: true
+  mode: "sidecar"
+  sidecar:
+    host: "localhost"
+    port: 8765
+  greeting: "主人，苏菲为您服务！"
+```
+
+### 第七步：重启 Hermes Gateway
 
 ```bash
 cd ~/.hermes/hermes-agent
@@ -120,15 +150,15 @@ python -m hermes_cli.main gateway restart
 
 ```yaml
 feishu_streaming_card:
-  enabled: true
-  mode: "sidecar"  # "sidecar" | "legacy"
+  enabled: true              # 是否启用流式卡片
+  mode: "sidecar"           # 固定为 sidecar 模式
   sidecar:
-    host: "localhost"
-    port: 8765
-  greeting: "主人，苏菲为您服务！"
+    host: "localhost"       # Sidecar 地址
+    port: 8765              # Sidecar 端口
+  greeting: "你的问候语！"   # 卡片标题
 ```
 
-### Sidecar 配置（自动生成）
+### Sidecar 配置
 
 配置文件位于：`~/.hermes/feishu-sidecar.yaml`
 
@@ -142,11 +172,14 @@ feishu_streaming_card:
 minimax-M2.7  ⏱️ 30s  81.1k↑  1.2k↓ ctx 82k/204k 40%
 ```
 
-- **模型名称**：当前使用模型
-- **时间**：处理耗时（秒）
-- **Token 输入**：k/m 缩略格式
-- **Token 输出**：k/m 缩略格式
-- **上下文占用**：当前 / 窗口大小 百分比
+| 字段 | 说明 |
+|------|------|
+| `minimax-M2.7` | 当前使用模型 |
+| `30s` | 处理耗时 |
+| `81.1k↑` | 输入 Token（k/m 缩略） |
+| `1.2k↓` | 输出 Token |
+| `ctx 82k/204k` | 上下文当前值/窗口大小 |
+| `40%` | 上下文占用百分比 |
 
 ---
 
@@ -161,9 +194,13 @@ tail -f ~/.hermes/logs/sidecar.log
 
 # 重启 sidecar
 ps aux | grep sidecar | grep -v grep | awk '{print $2}' | xargs kill
+sleep 1
 cd ~/github/hermes-feishu-streaming-card/sidecar && \
   PYTHONPATH=~/github/hermes-feishu-streaming-card \
   python -m sidecar.server > ~/.hermes/logs/sidecar.log 2>&1 &
+
+# 查看 gateway 日志
+tail -f ~/.hermes/logs/hermes-gateway.log
 ```
 
 ---
@@ -172,19 +209,43 @@ cd ~/github/hermes-feishu-streaming-card/sidecar && \
 
 ### 卡片不更新/卡住
 
-1. 检查 sidecar 状态：`curl http://localhost:8765/health`
-2. 重启 sidecar（如上述）
-3. 检查日志：`tail ~/.hermes/logs/sidecar.log`
+1. 检查 sidecar 状态：
+   ```bash
+   curl http://localhost:8765/health
+   ```
+2. 如果 `active_cards` 不为 0，重启 sidecar
+3. 检查日志：
+   ```bash
+   tail ~/.hermes/logs/sidecar.log
+   ```
 
 ### "card table number over limit" 错误
 
-这是飞书 CardKit 的卡片数量限制，通常是因为之前卡片未正常结束导致累积。重启 sidecar 即可恢复。
+这是飞书 CardKit 的卡片数量限制，通常是因为之前卡片未正常结束导致累积。重启 sidecar 即可恢复：
+
+```bash
+ps aux | grep sidecar | grep -v grep | awk '{print $2}' | xargs kill
+sleep 1
+cd ~/github/hermes-feishu-streaming-card/sidecar && \
+  PYTHONPATH=~/github/hermes-feishu-streaming-card \
+  python -m sidecar.server > ~/.hermes/logs/sidecar.log 2>&1 &
+```
 
 ### Token 认证过期
 
 ```bash
 lark-cli auth login
 ```
+
+### Gateway 启动失败
+
+```bash
+cd ~/.hermes/hermes-agent
+source venv/bin/activate
+python -m hermes_cli.main gateway start 2>&1
+```
+
+查看具体报错信息。
 
 ---
 
@@ -199,12 +260,10 @@ lark-cli auth login
 ### v2.2 (2026-04-19)
 - ✅ **修复最终状态丢失**：flush 失败不阻塞 finalize
 - ✅ **11310 错误处理**：不再无限重试
-- ✅ **简化卡片结构**：移除重复的 status_label
 
 ### v2.1 (2026-04-17)
 - ✅ **Sidecar 架构**：独立进程，对 Hermes 无侵入
 - ✅ **安装脚本**：支持 sidecar/legacy/dual 三种模式
-- ✅ **健康检查**：独立 metrics 端点
 
 ### v2.0 (2026-04-16)
 - ✅ **安全安装**：语法校验 + 注入点验证 + 自动备份
@@ -237,6 +296,23 @@ hermes-feishu-streaming-card/
 
 ---
 
+## ⚠️ 使用风险声明
+
+1. **Gateway 修改风险**：本工具会修改 Hermes Gateway 的 `feishu_forward.py` 文件，添加事件转发逻辑。虽然做了备份和版本控制，但任何第三方修改都存在风险。
+
+2. **飞书 API 限制**：CardKit API 有频率限制（`card table number over limit`），大文本输出时可能触发限制。
+
+3. **Token 过期**：lark-cli 的 tenant_access_token 有效期 2 小时，重启机器后需重新认证。
+
+4. **版本兼容性**：Hermes Gateway 更新后可能需要重新适配安装。
+
+**建议**：
+- 在非生产环境先测试
+- 定期备份配置文件
+- 关注 [GitHub Issues](https://github.com/baileyh8/hermes-feishu-streaming-card/issues) 获取更新
+
+---
+
 ## 📚 相关链接
 
 - [Hermes Agent](https://github.com/joeynyc/hermes-agent)
@@ -245,47 +321,4 @@ hermes-feishu-streaming-card/
 
 ---
 
-## 飞书配置指南
-
-### 1. 开通 Bot 能力
-
-[飞书开放平台](https://open.feishu.cn/) → 你的应用 → **添加应用能力** → 选 **机器人**
-
-### 2. 配置权限
-
-**订阅消息 → 权限管理**，申请以下权限：
-
-| 权限 | 用途 |
-|---|---|
-| `im:message` | 发送卡片消息 |
-| `im:message:send_as_bot` | 以机器人身份发消息 |
-| `cardkit:card` | 创建和更新卡片 |
-| `tenant_access_token` | 调用 APIs 获取 token |
-
-> 权限申请后需等待审核通过（通常几分钟~几小时）
-
-### 3. 开启长连接模式
-
-→ 应用 → **消息订阅** → 订阅方式 → 选 **长连接（WebSocket）**
-
-### 4. 启用 CardKit
-
-→ 应用 → **添加应用能力** → 搜索 **CardKit** → 开启
-
-### 5. 安装并认证 lark-cli
-
-```bash
-# 安装
-npm install -g @larksuite/oapi-cli
-
-# 认证
-lark-cli auth login
-```
-
-认证信息：
-- **App ID**: 飞书开放平台 → 你的应用 → **凭证与基础信息**
-- **App Secret**: 同上位置
-
----
-
-**需要帮助？** 提交 [Issue](https://github.com/baileyh8/hermes-feishu-streaming-card/issues)。
+**需要帮助？** 提交 [Issue](https://github.com/baileyh8/hermes-feishu-streaming-card/issues)
