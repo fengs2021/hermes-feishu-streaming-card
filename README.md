@@ -433,3 +433,416 @@ tail -f ~/.hermes/logs/agent.log | grep -i "feishu\|streaming\|card"
 ## License
 
 MIT
+
+
+---
+
+## 🆕 v2.1.0 — Sidecar 架构（安全隔离版）
+
+### 为什么需要 Sidecar？
+
+旧版本（v2.0 及之前）采用**直接代码注入**方式，修改 gateway 核心文件：
+- ❌ 升级 Hermes 时注入点变化 → 注入失败
+- ❌ 缩进错误导致 gateway 崩溃
+- ❌ 难以调试，逻辑与核心代码耦合
+
+**Sidecar 模式**将流式卡片逻辑移到独立进程，gateway 仅转发事件：
+
+```
+Hermes Gateway (unchanged)
+    ↓ 事件转发（<50 行修改）
+Feishu Streaming Sidecar (独立进程)
+    ↓ CardKit API
+飞书
+```
+
+### 核心优势
+
+| 特性 | Legacy (v2.0) | Sidecar (v2.1+) |
+|------|---------------|-----------------|
+| **Gateway 侵入性** | 高（直接修改源码） | 极低（仅事件转发） |
+| **进程隔离** | 否（崩溃影响 gateway） | ✅ 是 |
+| **独立升级** | 否（需重注入） | ✅ 是 |
+| **回滚难度** | 中（从备份恢复） | 极易（停 sidecar） |
+| **监控** | 依赖 gateway 日志 | ✅ 独立指标端点 |
+
+### 安装模式
+
+#### 模式 1：Legacy（不推荐）
+
+```bash
+python installer.py --mode legacy
+# 或旧版本默认安装方式
+```
+
+- 使用原有代码注入
+- 适用于已有稳定部署且不想改动的场景
+- **警告**：此模式将在 v3.0 移除
+
+#### 模式 2：Sidecar（推荐 ⭐）
+
+```bash
+# 全新安装
+python installer.py --mode sidecar
+
+# 或从 legacy 升级
+python installer.py --upgrade --to sidecar
+```
+
+- 独立 sidecar 进程
+- Gateway 最小修改（事件转发）
+- 支持独立启停、监控、升级
+
+#### 模式 3：Dual（过渡/验证）
+
+```bash
+python installer.py --mode dual
+```
+
+- Sidecar + Legacy 并行
+- Sidecar 失败自动降级到 legacy
+- 用于验证 sidecar 稳定性
+
+### 快速开始（Sidecar 模式）
+
+#### 1. 环境准备
+
+```bash
+# 检查依赖
+./scripts/check_env.py
+
+# 配置飞书权限（交互式）
+./scripts/setup_feishu.sh
+```
+
+#### 2. 安装
+
+```bash
+# 交互式安装向导
+python installer.py
+
+# 或直接安装 sidecar 模式
+python installer.py --mode sidecar
+```
+
+安装器会自动：
+1. 备份现有配置（如有）
+2. 复制 sidecar 模块到 `~/.hermes/feishu-sidecar/`
+3. 修改 `gateway/platforms/feishu.py`（添加事件转发，<50 行）
+4. 生成 sidecar 配置文件
+5. 启动 sidecar 服务
+6. 验证连接
+
+#### 3. 管理 Sidecar
+
+```bash
+# 查看状态
+hermes-sidecar status
+
+# 查看日志
+hermes-sidecar logs --tail
+
+# 重启
+hermes-sidecar restart
+
+# 测试连接
+hermes-sidecar test
+
+# 停止
+hermes-sidecar stop
+```
+
+#### 4. 切换模式
+
+```bash
+# 切换到 sidecar（从 legacy）
+python installer.py --switch-to sidecar
+
+# 切换回 legacy（回滚）
+python installer.py --switch-to legacy
+
+# 查看当前模式
+python installer.py --status
+```
+
+### Sidecar API 参考
+
+#### 健康检查
+
+```bash
+curl http://localhost:8765/health
+# 响应：
+# {
+#   "status": "healthy",
+#   "active_cards": 3,
+#   "uptime": 3600.5,
+#   "timestamp": 1713312000.5
+# }
+```
+
+#### 事件接口（Gateway → Sidecar）
+
+**统一事件端点**：`POST /events`
+
+事件格式：
+```json
+{
+  "schema_version": "1.0",
+  "event": "message_received|thinking|tool_call|finish|error",
+  "data": { ... }
+}
+```
+
+##### 事件：message_received
+
+创建卡片。
+
+```json
+{
+  "event": "message_received",
+  "data": {
+    "chat_id": "oc_xxx",
+    "message_id": "msg_xxx",
+    "user_id": "user_xxx",
+    "greeting": "主人，苏菲为您服务！",
+    "model": "MiniMax-M2.7",
+    "text": "用户提问内容..."
+  }
+}
+```
+
+响应：
+```json
+{
+  "card_id": "card_xxx"
+}
+```
+
+##### 事件：thinking
+
+思考过程更新（非阻塞，无需等待响应）。
+
+```json
+{
+  "event": "thinking",
+  "data": {
+    "card_id": "card_xxx",
+    "chat_id": "oc_xxx",
+    "delta": "Step 1: 分析需求...",
+    "tools": [
+      {"name": "web_search", "status": "running"}
+    ]
+  }
+}
+```
+
+##### 事件：finish
+
+任务完成，最终化卡片。
+
+```json
+{
+  "event": "finish",
+  "data": {
+    "card_id": "card_xxx",
+    "chat_id": "oc_xxx",
+    "content": "最终回答内容...",
+    "tokens": {
+      "input": 100,
+      "output": 200,
+      "cache_read": 0
+    },
+    "duration": 5.2
+  }
+}
+```
+
+##### 事件：error
+
+错误处理。
+
+```json
+{
+  "event": "error",
+  "data": {
+    "card_id": "card_xxx",
+    "chat_id": "oc_xxx",
+    "error": "错误描述"
+  }
+}
+```
+
+#### Metrics 端点（Prometheus）
+
+```bash
+curl http://localhost:8765/metrics
+```
+
+输出：
+```
+# HELP feishu_cards_created Total cards created
+# TYPE feishu_cards_created counter
+feishu_cards_created 10
+
+# HELP feishu_active_cards Currently active cards
+# TYPE feishu_active_cards gauge
+feishu_active_cards 3
+```
+
+### 配置说明
+
+#### Gateway 配置（config.yaml）
+
+```yaml
+feishu_streaming_card:
+  enabled: true
+  mode: "sidecar"  # "legacy" | "sidecar" | "dual"
+  
+  # Sidecar 连接配置
+  sidecar:
+    host: "localhost"
+    port: 8765
+    base_url: ""  # 可选，覆盖默认 URL
+    
+  # 卡片行为
+  greeting: "主人，苏菲为您服务！"
+  card_max_age_seconds: 3600  # 卡片最大生命周期
+```
+
+#### Sidecar 独立配置（~/.hermes/feishu-sidecar.yaml）
+
+```yaml
+server:
+  host: "localhost"
+  port: 8765
+  enable_metrics: true
+
+cardkit:
+  base_url: "https://open.feishu.cn/open-apis/cardkit/v1"
+  timeout: 30
+  max_retries: 3
+
+card:
+  merge_window_ms: 100  # 更新合并窗口
+  max_age_seconds: 3600
+```
+
+### 故障排查
+
+#### Sidecar 无法启动
+
+```bash
+# 检查端口占用
+lsof -i :8765
+
+# 查看日志
+hermes-sidecar logs --tail
+
+# 测试配置
+python -m sidecar.server --debug
+```
+
+#### Gateway 无法连接 Sidecar
+
+```bash
+# 验证 sidecar 健康
+curl http://localhost:8765/health
+
+# 检查 gateway 日志
+tail -f ~/.hermes/logs/gateway.log | grep -i sidecar
+
+# 检查配置
+grep "feishu_streaming_card" ~/.hermes/config.yaml
+```
+
+#### 卡片不显示
+
+1. 确认 sidecar 运行：`hermes-sidecar status`
+2. 检查飞书 Bot 权限（需 `cardkit:card`）
+3. 验证 tenant token：`lark-cli auth token`
+4. 查看 sidecar 日志：`hermes-sidecar logs`
+
+### 升级指南
+
+#### 从 v2.0 (Legacy) 升级到 v2.1 (Sidecar)
+
+```bash
+# 1. 检查当前状态
+python installer.py --status
+# 输出：mode=legacy, version=2.0.0
+
+# 2. 安装 sidecar（并行模式，不影响现有功能）
+python installer.py --install-sidecar
+
+# 3. 验证 sidecar 运行
+hermes-sidecar status
+hermes-sidecar test
+
+# 4. 切换到 sidecar 模式
+python installer.py --switch-to sidecar
+
+# 5. 观察 1-3 天，确认稳定
+
+# 6. （可选）清理 legacy 代码
+python installer.py --cleanup-legacy
+```
+
+#### 回滚
+
+```bash
+# 立即回滚到 legacy
+python installer.py --switch-to legacy
+
+# 或彻底卸载 sidecar
+python installer.py --uninstall --sidecar-only
+```
+
+### 开发者信息
+
+#### 项目结构
+
+```
+hermes-feishu-streaming-card/
+├── adapter/                    # 适配器模式核心
+│   ├── streaming_adapter.py   # 抽象基类
+│   ├── legacy_adapter.py      # 旧逻辑封装
+│   ├── sidecar_adapter.py     # Sidecar 客户端
+│   ├── dual_adapter.py        # 双模式
+│   └── factory.py             # 工厂
+├── sidecar/                   # 独立服务端
+│   ├── server.py              # HTTP 服务
+│   ├── card_manager.py        # 卡片管理
+│   ├── cardkit_client.py      # CardKit API 客户端
+│   ├── config.py              # 配置加载
+│   └── __main__.py
+├── patch/                     # 旧版本注入代码（已废弃）
+├── sidecar_cli.py            # Sidecar 管理工具
+└── installer.py              # 安装器（增强版）
+```
+
+#### 事件协议
+
+Event schema version: `1.0`
+
+所有事件必须包含：
+```json
+{
+  "schema_version": "1.0",
+  "event": "...",
+  "data": { ... }
+}
+```
+
+后续版本更新会保持向后兼容，旧 sidecar 应能处理新事件（忽略未知字段）。
+
+---
+
+## 📚 相关链接
+
+- [Hermes Agent](https://github.com/joeynyc/hermes-agent)
+- [飞书 CardKit 文档](https://open.feishu.cn/document/ukTMukTMukTM/uEDOwedzUjL24CN04iN0kNj0)
+- [lark-cli](https://github.com/larksuite/oapi-cli)
+
+---
+
+**需要帮助？** 提交 [Issue](https://github.com/baileyh8/hermes-feishu-streaming-card/issues)。
