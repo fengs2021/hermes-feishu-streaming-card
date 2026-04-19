@@ -93,17 +93,50 @@ FINISH_INJECTION = """
 
 
 def find_pattern_end(lines, start_idx, open_char="(", close_char=")"):
-    """Find the line index where a matching close char is found."""
+    """Find the line index where a matching close char is found.
+    
+    Properly handles string literals so braces inside strings don't affect counting.
+    """
     depth = 0
+    in_string = False
+    string_char = None
+    
     for i in range(start_idx, len(lines)):
         line = lines[i]
-        for c in line:
+        j = 0
+        while j < len(line):
+            c = line[j]
+            
+            # Handle string detection (both single and double quotes)
+            if not in_string and c in ('"', "'"):
+                in_string = True
+                string_char = c
+                j += 1
+                continue
+            
+            if in_string:
+                # Handle escaped characters
+                if c == '\\':
+                    j += 2
+                    continue
+                if c == string_char:
+                    in_string = False
+                    string_char = None
+                j += 1
+                continue
+            
+            # Skip f-string or format string prefixes
+            if c in ('f', 'F', 'r', 'R') and j + 1 < len(line) and line[j + 1] in ('"', "'"):
+                j += 1
+                continue
+            
             if c == open_char:
                 depth += 1
             elif c == close_char:
                 depth -= 1
                 if depth == 0:
                     return i
+            j += 1
     return None
 
 
@@ -180,6 +213,16 @@ def patch_run_py():
         backup.write_text(original, encoding='utf-8')
         print(f"Backup: {backup}")
 
+    # Validate syntax before writing
+    try:
+        import ast
+        ast.parse(''.join(lines))
+    except SyntaxError as e:
+        print(f"ERROR: Patched code has syntax error: {e}")
+        print("Restoring original file")
+        RUN_PY_PATH.write_text(original, encoding='utf-8')
+        return False
+    
     RUN_PY_PATH.write_text(''.join(lines), encoding='utf-8')
     print(f"✓ Patched run.py successfully")
     return True
