@@ -1,97 +1,83 @@
-# Feishu Streaming Card for Hermes
+# Feishu Streaming Card for Hermes v2.3
 
 Adds Feishu/Lark streaming card support to [Hermes Gateway](https://github.com/joeynyc/hermes-agent). When a user sends a message to the bot, a card appears with a real-time typewriter effect showing AI thinking, tool calls, and the final result.
 
----
-
-## 🤔 Tired of these problems?
-
-| Pain Point | Description |
-|---|---|
-| 🔴 **Message Spam** | Agent thinking floods your chat with scattered messages — thinking fragments, tool logs, all mixed together |
-| 🔴 **Waiting Anxiety** | You send a message and get nothing back. Is it dead? Still thinking? No idea how long to wait |
-| 🔴 **Format Lost** | Markdown turns into plain text in Feishu — tables, code blocks, lists all broken |
-| 🔴 **Debug Blindspot** | Tool calls are invisible. You have no idea what tools the Agent is using or how far it's gotten |
-
-## ✨ One card. Solves all of it.
-
-**Feishu Streaming Card** upgrades Feishu messages into a real-time collaboration panel:
-
-- 📌 **No message spam** — AI thinking streams word-by-word into a single card, chat stays clean
-- ⏳ **Status is obvious** — 🤔Thinking → ⚡Running → ✅Completed, clear at every stage
-- 🎨 **Native format preserved** — Markdown tables, code blocks, lists render natively in Feishu
-- 🔍 **Tools are transparent** — Real-time tool call count and content, full visibility into Agent behavior
-- 📊 **Stats auto-generated** — Elapsed time, token usage, context usage, all in the footer
-
-| Feature | Description |
-|---|---|
-| 🎯 Pre-created card | Card is created immediately when message arrives |
-| ⌨️ Typewriter effect | AI thinking is streamed word-by-word into the card |
-| 🔧 Tool tracking | Shows real-time tool call count and content |
-| 📊 Token stats | Footer shows elapsed time, I/O tokens, context usage |
-| 🔒 Sequence protection | asyncio.Lock prevents 300317 race condition |
-| ⚙️ Easy config | One-command install, all settings in config.yaml |
+> **⚠️ Usage Risk**: This tool modifies Hermes Gateway files (event forwarding logic, ~50 lines). Although sidecar mode provides process isolation, any third-party modification carries risk. Test in non-production environments first.
 
 ---
 
-## Changelog
-
-### v1.1.0 (2026-04-15)
-- ✨ **Support latest Hermes** (commit `da8bab7`): Rewrote patch engine to adapt to latest NousResearch/hermes-agent code structure (send() signature change)
-- 🔧 **Auto version detection**: `installer.py --check` auto-detects target Hermes version, skips if already installed
-- 🐛 Fix: Agent footer no longer leaks into thinking_content body
-
-### v1.0.0 (2026-04-15)
-- 🎉 Initial release
-- Streaming typewriter card, tool call tracking, Token stats footer
-
----
-
-## Preview
+## ✨ Preview
 
 | Thinking | Completed |
 |---|---|
 | ![Thinking](thinking.png) | ![Ending](ending.png) |
 
-**Thinking** — Typewriter effect streaming AI reasoning, tool calls tracking in progress
+**Thinking** — Typewriter effect streaming AI reasoning, tool calls tracking
 **Completed** — Status switches to ✅, shows result summary and full token stats
 
 ---
 
-## Requirements
+## 🎯 Features
 
-- Python 3.9+
-- [hermes-agent](https://github.com/joeynyc/hermes-agent) installed
-- Feishu Bot configured with WebSocket long connection mode
-- Python packages: `pyyaml`, `regex`
+| Feature | Description |
+|---|---|
+| 📌 **No Spam** | AI thinking streams word-by-word into a single card |
+| ⌨️ **Typewriter Effect** | Real-time streaming of AI reasoning |
+| 🔧 **Tool Tracking** | Real-time display of tool call count and content |
+| 📊 **Smart Footer** | Model, time, tokens (k/m), context percentage |
+| 🔒 **Process Isolation** | Sidecar runs independently, won't crash Hermes |
+| ⚙️ **One-Command Deploy** | Fully automated installation script |
 
 ---
 
-## Feishu Bot Permission Setup
+## 🏗️ Architecture
 
-The streaming card relies on Feishu CardKit API and IM message APIs. Your bot needs the following permissions:
+**Sidecar Mode (v2.1+ Recommended)**
 
-### 1. Enable Bot Capability
-Go to [Feishu Open Platform](https://open.feishu.cn/) → your app → **Add App Capabilities** → select **Bot**
+Streaming card logic runs in a separate process; Hermes Gateway only forwards events:
 
-### 2. Configure Permissions (Message Subscription → Permission Management)
+```
+User sends message
+    ↓
+Hermes Gateway (receives message, forwards events)
+    ↓ WebSocket/HTTP
+Feishu Streaming Sidecar (separate process)
+    ↓ CardKit API
+Feishu Card
+```
 
-| Permission | Purpose |
-|---|---|
-| `im:message` | Send card messages to chat |
-| `im:message:send_as_bot` | Send messages as bot |
-| `cardkit:card` | Create and update CardKit cards |
-| `tenant_access_token` | Get tenant access token via API |
+**Gateway Modification**: Only adds event forwarding to `gateway/platforms/feishu_forward.py` (~50 lines), no core code changes.
 
-### 3. Enable Long Connection (WebSocket) Mode
-→ App → **Message Subscription** → Subscription Method → select **Long Connection (WebSocket)**
+---
 
-### 4. Enable CardKit
-→ App → **Add App Capability** → search **CardKit** → enable
+## 📋 Requirements
 
-### 5. Install and configure lark-cli（Required）
+| Requirement | Version | Notes |
+|-------------|---------|-------|
+| Python | 3.9+ | Sidecar runtime |
+| Hermes Gateway | Latest | Installed with WS long connection |
+| Feishu Bot | - | Bot capability + CardKit enabled |
+| Node.js | 18+ | For lark-cli |
+| lark-cli | `@larksuite/oapi-cli` | Required for tenant token |
 
-The streaming card needs a fresh tenant_access_token for every card update, obtained via lark-cli.
+---
+
+## 🚀 Deployment
+
+### Step 1: Clone the Project
+
+```bash
+git clone https://github.com/baileyh8/hermes-feishu-streaming-card.git ~/github/hermes-feishu-streaming-card
+cd ~/github/hermes-feishu-streaming-card
+```
+
+### Step 2: Install Python Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### Step 3: Install and Authenticate lark-cli
 
 ```bash
 # Install
@@ -99,74 +85,56 @@ npm install -g @larksuite/oapi-cli
 
 # Authenticate (interactive)
 lark-cli auth login
-
-# Verify
-lark-cli api POST /open-apis/auth/v3/tenant_access_token/internal \
-  --data '{"app_id":"your_app_id","app_secret":"your_app_secret"}'
-# Expected: {"code": 0, "tenant_access_token": "..."}
 ```
 
-> Note: lark-cli auth state is persistent. After a machine restart you may need to re-run `lark-cli auth login`.
+You'll need:
+- **App ID**: Feishu Open Platform → Your app → Credentials & Basic Info
+- **App Secret**: Same location as above
 
-### Quick Checklist
+### Step 4: Configure Feishu Bot
 
-- [ ] Bot capability enabled
-- [ ] `im:message` + `cardkit:card` permissions approved
-- [ ] WebSocket long connection mode enabled
-- [ ] CardKit capability added
-- [ ] `lark-cli` installed and `lark-cli auth login` completed
-- [ ] `FEISHU_APP_ID` + `FEISHU_APP_SECRET` in `.env`
+On [Feishu Open Platform](https://open.feishu.cn/):
 
----
+1. **Enable Bot Capability**: Add App Capability → select Bot
+2. **Apply Permissions** (Message Subscription → Permission Management):
+   - `im:message` — Send card messages
+   - `im:message:send_as_bot` — Send as bot
+   - `cardkit:card` — Create and update cards
+3. **Enable Long Connection**: Message Subscription → Subscription Method → Long Connection (WebSocket)
+4. **Enable CardKit**: Add App Capability → search CardKit → enable
 
-## Installation
+> ⚠️ Permissions require review (usually a few minutes to hours)
 
-### One-step install
+### Step 5: One-Command Install Sidecar
 
 ```bash
 cd ~/github/hermes-feishu-streaming-card
-pip install -r requirements.txt
-python installer.py --greeting "Your custom greeting"
+python installer_v2.py --mode sidecar
 ```
 
-Use `--hermes-dir` to specify the hermes-agent path (default: `~/.hermes/hermes-agent`).
+Installation will:
+1. Check environment dependencies
+2. Backup existing config
+3. Install sidecar to `~/.hermes/feishu-sidecar/`
+4. Modify gateway event forwarding (~50 lines)
+5. Start sidecar service
+6. Verify running status
 
-### Manual install
+### Step 6: Configure Gateway
 
-```bash
-python installer.py \
-  --hermes-dir /path/to/hermes-agent \
-  --greeting "主人，苏菲为您服务！" \
-  --pending-timeout 30
-```
-
-### Verify installation
-
-```bash
-python installer.py --check
-```
-
----
-
-## Configuration
-
-After install, add this to `~/.hermes/hermes-agent/config.yaml`:
+Add to `~/.hermes/hermes-agent/config.yaml`:
 
 ```yaml
 feishu_streaming_card:
-  # Card header title — the first thing users see
-  greeting: "主人，苏菲为您服务！"
-
-  # Enable/disable the streaming card feature
   enabled: true
-
-  # How long to wait for card creation before sending normal message (seconds)
-  pending_timeout: 30
+  mode: "sidecar"
+  sidecar:
+    host: "localhost"
+    port: 8765
+  greeting: "Your greeting here!"
 ```
 
----
-
-## Restart Hermes
+### Step 7: Restart Hermes Gateway
 
 ```bash
 cd ~/.hermes/hermes-agent
@@ -176,90 +144,179 @@ python -m hermes_cli.main gateway restart
 
 ---
 
-## Uninstall
+## 🔧 Configuration
+
+### Gateway Config (config.yaml)
+
+```yaml
+feishu_streaming_card:
+  enabled: true              # Enable/disable streaming card
+  mode: "sidecar"           # Fixed to sidecar mode
+  sidecar:
+    host: "localhost"       # Sidecar address
+    port: 8765              # Sidecar port
+  greeting: "Your greeting!" # Card title
+```
+
+### Sidecar Config
+
+Config file: `~/.hermes/feishu-sidecar.yaml`
+
+Usually no modification needed.
+
+---
+
+## 📊 Card Footer Format (v2.3)
+
+```
+minimax-M2.7  ⏱️ 30s  81.1k↑  1.2k↓ ctx 82k/204k 40%
+```
+
+| Field | Description |
+|-------|-------------|
+| `minimax-M2.7` | Current model |
+| `30s` | Processing time |
+| `81.1k↑` | Input tokens (k/m abbreviated) |
+| `1.2k↓` | Output tokens |
+| `ctx 82k/204k` | Context current/window size |
+| `40%` | Context usage percentage |
+
+---
+
+## 🔍 Management Commands
 
 ```bash
-python installer.py --uninstall
-# Then restart hermes
-python -m hermes_cli.main gateway restart
+# Check sidecar status
+curl http://localhost:8765/health
+
+# View sidecar logs
+tail -f ~/.hermes/logs/sidecar.log
+
+# Restart sidecar
+ps aux | grep sidecar | grep -v grep | awk '{print $2}' | xargs kill
+sleep 1
+cd ~/github/hermes-feishu-streaming-card/sidecar && \
+  PYTHONPATH=~/github/hermes-feishu-streaming-card \
+  python -m sidecar.server > ~/.hermes/logs/sidecar.log 2>&1 &
+
+# View gateway logs
+tail -f ~/.hermes/logs/hermes-gateway.log
 ```
 
 ---
 
-## How It Works
+## 🐛 Troubleshooting
 
+### Card Not Updating/Stuck
+
+1. Check sidecar status:
+   ```bash
+   curl http://localhost:8765/health
+   ```
+2. If `active_cards` is not 0, restart sidecar
+3. Check logs:
+   ```bash
+   tail ~/.hermes/logs/sidecar.log
+   ```
+
+### "card table number over limit" Error
+
+This is Feishu CardKit's card limit. Usually caused by accumulated cards from abnormal exits. Restart sidecar to recover:
+
+```bash
+ps aux | grep sidecar | grep -v grep | awk '{print $2}' | xargs kill
+sleep 1
+cd ~/github/hermes-feishu-streaming-card/sidecar && \
+  PYTHONPATH=~/github/hermes-feishu-streaming-card \
+  python -m sidecar.server > ~/.hermes/logs/sidecar.log 2>&1 &
 ```
-User sends message
-  ↓
-run.py: call send_streaming_card() immediately
-  ├─ header: greeting + model
-  ├─ thinking_content: "⏳ 执行中..."
-  ├─ status_label: "🤔思考中"
-  ├─ tools_label: "🔧 工具调用 (0次)"
-  ├─ tools_body: "⏳ 等待开始..."
-  └─ footer: "⏳ 执行中..."
-  ↓
-Streaming text arrives → edit_message → send()
-  └─ writes to thinking_content (overwrite mode, typewriter effect)
-  ↓
-Tool call arrives → send()
-  ├─ status_label: "⚡执行中"
-  ├─ tools_label: "🔧 工具调用 (N次)"
-  └─ tools_body: tool log
-  ↓
-Agent finishes → finalize_streaming_card()
-  ├─ status_label: "✅已完成"
-  ├─ thinking_content: result_summary
-  ├─ tools_label: "🔧 工具调用 (N次)  ✅完成"
-  └─ footer: token stats
+
+### Token Auth Expired
+
+```bash
+lark-cli auth login
+```
+
+### Gateway Fails to Start
+
+```bash
+cd ~/.hermes/hermes-agent
+source venv/bin/activate
+python -m hermes_cli.main gateway start 2>&1
 ```
 
 ---
 
-## Known Limitations
+## 📝 Changelog
 
-1. **Card creation delay**: Model init takes 10-30s; card shows initial state during this time
-2. **CardKit PUT restriction**: Only root-level `markdown`/`plain_text`/`lark_md` elements can be updated
-3. **Image/video attachments**: MEDIA: directives are sent as separate messages, not inside the card
+### v2.3 (2026-04-19)
+- ✅ **Footer optimization**: Model name + time + tokens (k/m) + context percentage
+- ✅ **Footer font size**: x-small
+- ✅ **Refresh rate optimization**: 2s or 300 chars or complete sentence
+- ✅ **Flush timeout protection**: 5s timeout, failures don't block finalize
+
+### v2.2 (2026-04-19)
+- ✅ **Fix final status loss**: flush failure doesn't block finalize
+- ✅ **11310 error handling**: No more infinite retries
+
+### v2.1 (2026-04-17)
+- ✅ **Sidecar architecture**: Independent process, no intrusion to Hermes
+
+### v2.0 (2026-04-16)
+- ✅ **Safe installation**: Syntax validation + injection point verification + auto backup
+- ✅ **Version-aware**: Auto-detect different Hermes versions
+- ✅ **Concurrency protection**: per-chat asyncio.Lock
+
+### v1.0 (2026-04-15)
+- 🎉 **Initial release**: Streaming typewriter card, tool tracking, token stats
 
 ---
 
-## File Structure
+## 🗂️ Project Structure
 
 ```
 hermes-feishu-streaming-card/
 ├── README.md                    # This file (Chinese)
 ├── README_en.md                 # English version
-├── installer.py                 # One-command installer
+├── installer_v2.py              # v2.x installer (recommended)
+├── installer_sidecar.py         # Sidecar-only installer
 ├── requirements.txt             # Python dependencies
-├── config.yaml.example          # Config template
-└── patch/
-    ├── __init__.py
-    ├── feishu_patch.py          # feishu.py patch
-    └── run_patch.py             # run.py patch
+├── config.yaml.example         # Config example
+├── sidecar/                    # Sidecar core code
+│   ├── server.py               # HTTP server entry
+│   ├── card_manager.py         # Card state management
+│   ├── cardkit_client.py       # CardKit API wrapper
+│   └── config.py              # Config loader
+├── adapter/                    # Adapter pattern
+├── scripts/                    # Utility scripts
+└── tests/                     # Test cases
 ```
 
 ---
 
-## Troubleshooting
+## ⚠️ Risk Disclaimer
 
-**Card not appearing?**
-```bash
-# Check patch status
-python installer.py --check
+1. **Gateway Modification Risk**: This tool modifies Hermes Gateway's `feishu_forward.py`, adding event forwarding logic. Although backups and version control are in place, any third-party modification carries risk.
 
-# View logs
-tail -f ~/.hermes/logs/agent.log | grep -i "feishu\|streaming\|card"
-```
+2. **Feishu API Limits**: CardKit API has rate limits (`card table number over limit`). May trigger during large text output.
 
-**Sequence conflict errors (300317)?**
-Make sure hermes-agent is up to date. Older versions may lack the necessary Lock mechanism.
+3. **Token Expiration**: lark-cli's tenant_access_token is valid for 2 hours. Re-auth after machine restart.
 
-**Card not updating?**
-Verify your Feishu Bot uses WebSocket long connection mode (WS mode required for CardKit updates).
+4. **Version Compatibility**: Hermes Gateway updates may require re-installation.
+
+**Recommendations**:
+- Test in non-production environments first
+- Regularly backup config files
+- Follow [GitHub Issues](https://github.com/baileyh8/hermes-feishu-streaming-card/issues) for updates
 
 ---
 
-## License
+## 📚 Related Links
 
-MIT
+- [Hermes Agent](https://github.com/joeynyc/hermes-agent)
+- [Feishu CardKit Docs](https://open.feishu.cn/document/ukTMukTMukTM/uEDOwedzUjL24CN04iN0kNj0)
+- [lark-cli](https://github.com/larksuite/oapi-cli)
+
+---
+
+**Need help?** Submit an [Issue](https://github.com/baileyh8/hermes-feishu-streaming-card/issues)
