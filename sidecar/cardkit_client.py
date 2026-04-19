@@ -374,8 +374,10 @@ class CardKitClient:
                 return f"{n/1000:.1f}k".rstrip('0').rstrip('.')
             return str(n)
 
-        # 尝试多种 key 组合
+        # 优先使用 last_prompt_tokens（实际发送到 API 的上下文大小）
+        # 其次使用 input_tokens
         input_toks = (
+            tokens.get('last_prompt_tokens') or
             get_token_value('usage.prompt_tokens') or
             get_token_value('usage.input_tokens') or
             tokens.get('input_tokens') or

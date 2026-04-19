@@ -77,6 +77,7 @@ FINISH_INJECTION = """
                         'output_tokens': agent_result.get('output_tokens', 0),
                         'cache_read_tokens': agent_result.get('cache_read_tokens', 0),
                         'api_calls': agent_result.get('api_calls', 0),
+                        'last_prompt_tokens': agent_result.get('last_prompt_tokens', 0) or agent_result.get('input_tokens', 0),
                     }
                     _finish_payload = {
                         'chat_id': source.chat_id,
