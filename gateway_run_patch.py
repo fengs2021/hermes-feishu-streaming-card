@@ -308,8 +308,12 @@ def analyze_structure(content: str) -> dict:
     return result
 
 
-def patch_run_py():
-    RUN_PY_PATH = Path.home() / ".hermes" / "hermes-agent" / "gateway" / "run.py"
+def patch_run_py(hermes_dir=None):
+    if hermes_dir is None:
+        hermes_dir = Path.home() / ".hermes" / "hermes-agent"
+    else:
+        hermes_dir = Path(hermes_dir)
+    RUN_PY_PATH = hermes_dir / "gateway" / "run.py"
     
     if not RUN_PY_PATH.exists():
         print(f"ERROR: {RUN_PY_PATH} not found")
@@ -388,4 +392,8 @@ def patch_run_py():
 
 if __name__ == '__main__':
     import sys
-    sys.exit(0 if patch_run_py() else 1)
+    import argparse
+    parser = argparse.ArgumentParser(description='Patch Hermes gateway/run.py')
+    parser.add_argument('--hermes-dir', help='Path to Hermes agent directory')
+    args = parser.parse_args()
+    sys.exit(0 if patch_run_py(args.hermes_dir) else 1)
