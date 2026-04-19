@@ -251,7 +251,8 @@ def install_sidecar_mode():
         capture_output=True, text=True
     )
     if result.returncode != 0:
-        error(f"Failed to patch run.py: {result.stderr}")
+        error(f"Failed to patch run.py: {result.stdout or result.stderr}")
+        info("Hint: Hermes may have updated. Check https://github.com/baileyh8/hermes-feishu-streaming-card/issues")
 
     # 3. Copy adapter modules to gateway/
     info("Copying adapter modules...")

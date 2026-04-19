@@ -162,6 +162,7 @@ def patch_run_py():
 
     if target_idx is None:
         print("ERROR: Could not find _handle_message_with_agent")
+        print("Hint: Hermes may have updated its code structure. Please check the latest Hermes version.")
         return False
 
     # Find _msg_start_time = time.time() within _handle_message_with_agent
@@ -172,7 +173,8 @@ def patch_run_py():
             break
 
     if msg_start_idx is None:
-        print("ERROR: Could not find _msg_start_time")
+        print("ERROR: Could not find _msg_start_time inside _handle_message_with_agent")
+        print("Hint: Hermes version may have changed the message handling logic.")
         return False
 
     # Insert after the line containing _msg_start_time
