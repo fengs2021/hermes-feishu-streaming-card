@@ -1,26 +1,23 @@
 #!/usr/bin/env python3
 """
-gateway_run_patch.py — Inject sidecar event forwarding into run.py
+gateway_run_patch.py — Adaptive injector for Feishu Streaming Card
 
-Patches Gateway's _handle_message_with_agent() to forward Feishu events
-to the streaming card sidecar (non-blocking, exception-isolated).
+Scans the user's run.py to find injection points dynamically.
+Works regardless of Hermes version indentation differences.
 
-Two injection points:
-1. message_received: after _msg_start_time (inside _handle_message_with_agent)
+Injection points:
+1. message_received: after _msg_start_time assignment inside _handle_message_with_agent
 2. finish: after agent:end hook completes
 """
 
 import re
+import ast
 from pathlib import Path
 
-# Path to Hermes gateway run.py
-RUN_PY_PATH = Path.home() / ".hermes" / "hermes-agent" / "gateway" / "run.py"
 
-# Injection code for message_received event
+# Injection code for message_received event (8-space indentation for _handle_message_with_agent body)
 MESSAGE_RECEIVED_INJECTION = """
         # ── Feishu Streaming Card Sidecar Event Forwarding ─────────────────────
-        # Config-driven: feishu_streaming_card.mode = "sidecar" | "legacy" | "disabled"
-        # Non-blocking: fire-and-forget, exceptions handled in emitter
         try:
             _fsc_mode = None
             try:
@@ -51,53 +48,130 @@ MESSAGE_RECEIVED_INJECTION = """
                 asyncio.create_task(_emitter.emit('message_received', _payload))
         except Exception:
             pass
-        # ────────────────────────────────────────────────────────────────────────
-"""
+        # ────────────────────────────────────────────────────────────────────────"""
 
-# Injection code for finish event
+# Injection code for finish event (12-space indentation for try block inside _handle_message_with_agent)
 FINISH_INJECTION = """
-        # ── Feishu Streaming Card Sidecar Finish Event ─────────────────────────
-        try:
-            _fsc_mode = None
+            # ── Feishu Streaming Card Sidecar Finish Event ─────────────────────
             try:
-                import yaml as _yaml
-                with open(str(self._hermes_dir / "config.yaml")) as _f:
-                    _cfg = _yaml.safe_load(_f) or {}
-                _fsc_mode = (_cfg.get("feishu_streaming_card", {}) or {}).get("mode", "disabled")
+                _fsc_mode = None
+                try:
+                    import yaml as _yaml
+                    with open(str(self._hermes_dir / "config.yaml")) as _f:
+                        _cfg = _yaml.safe_load(_f) or {}
+                    _fsc_mode = (_cfg.get("feishu_streaming_card", {}) or {}).get("mode", "disabled")
+                except Exception:
+                    pass
+
+                if _fsc_mode == "sidecar" and source.platform.value == "feishu":
+                    _emitter = getattr(self, '_feishu_sidecar_emitter', None)
+                    if _emitter is not None:
+                        import time as _time
+                        _duration = _time.time() - _msg_start_time
+                        _tokens = {
+                            'input_tokens': agent_result.get('input_tokens', 0),
+                            'output_tokens': agent_result.get('output_tokens', 0),
+                            'cache_read_tokens': agent_result.get('cache_read_tokens', 0),
+                            'api_calls': agent_result.get('api_calls', 0),
+                            'last_prompt_tokens': agent_result.get('last_prompt_tokens', 0) or agent_result.get('input_tokens', 0),
+                        }
+                        _finish_payload = {
+                            'chat_id': source.chat_id,
+                            'final_content': (response or '')[:1000],
+                            'tokens': _tokens,
+                            'duration': _duration,
+                            'thinking_start': _msg_start_time,
+                        }
+                        asyncio.create_task(_emitter.emit('finish', _finish_payload))
             except Exception:
                 pass
-
-            if _fsc_mode == "sidecar" and source.platform.value == "feishu":
-                _emitter = getattr(self, '_feishu_sidecar_emitter', None)
-                if _emitter is not None:
-                    import time as _time
-                    _duration = _time.time() - _msg_start_time
-                    _tokens = {
-                        'input_tokens': agent_result.get('input_tokens', 0),
-                        'output_tokens': agent_result.get('output_tokens', 0),
-                        'cache_read_tokens': agent_result.get('cache_read_tokens', 0),
-                        'api_calls': agent_result.get('api_calls', 0),
-                        'last_prompt_tokens': agent_result.get('last_prompt_tokens', 0) or agent_result.get('input_tokens', 0),
-                    }
-                    _finish_payload = {
-                        'chat_id': source.chat_id,
-                        'final_content': (response or '')[:1000],
-                        'tokens': _tokens,
-                        'duration': _duration,
-                        'thinking_start': _msg_start_time,
-                    }
-                    asyncio.create_task(_emitter.emit('finish', _finish_payload))
-        except Exception:
-            pass
-        # ────────────────────────────────────────────────────────────────────────
-"""
+            # ───────────────────────────────────────────────────────────────────"""
 
 
-def find_pattern_end(lines, start_idx, open_char="(", close_char=")"):
-    """Find the line index where a matching close char is found.
+def find_function_bounds(content: str, func_signature_pattern: str) -> tuple:
+    """Find a function's start and end line (0-indexed)."""
+    lines = content.split('\n')
     
-    Properly handles string literals so braces inside strings don't affect counting.
-    """
+    func_start = None
+    func_indent = None
+    for i, line in enumerate(lines):
+        if re.search(func_signature_pattern, line):
+            func_start = i
+            func_indent = len(line) - len(line.lstrip())
+            break
+    
+    if func_start is None:
+        return None, None, None
+    
+    func_end = None
+    for i in range(func_start + 1, len(lines)):
+        line = lines[i]
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        
+        indent = len(line) - len(line.lstrip())
+        if indent <= func_indent and (stripped.startswith('def ') or 
+                                       stripped.startswith('class ') or 
+                                       stripped.startswith('async def ')):
+            func_end = i
+            break
+    
+    if func_end is None:
+        func_end = len(lines)
+    
+    return func_start, func_end, func_indent
+
+
+def find_pattern_in_function(content: str, func_start: int, func_end: int, patterns: list) -> int:
+    """Find a line matching any of the patterns within a function range."""
+    lines = content.split('\n')
+    for i in range(func_start, min(func_end, len(lines))):
+        line = lines[i]
+        for pattern in patterns:
+            if re.search(pattern, line):
+                return i
+    return None
+
+
+def analyze_run_py(content: str) -> dict:
+    """Analyze run.py and report what we found."""
+    analysis = {
+        'has_handle_message': False,
+        'has_msg_start_time': False,
+        'has_agent_end': False,
+        'handle_message_line': None,
+        'msg_start_line': None,
+        'agent_end_line': None,
+        'agent_end_indent': None,
+    }
+    
+    lines = content.split('\n')
+    
+    for i, line in enumerate(lines):
+        if 'async def _handle_message_with_agent' in line or 'def _handle_message_with_agent' in line:
+            analysis['has_handle_message'] = True
+            analysis['handle_message_line'] = i + 1
+            break
+    
+    for i, line in enumerate(lines):
+        if '_msg_start_time' in line and '=' in line and 'time.time()' in line:
+            analysis['has_msg_start_time'] = True
+            analysis['msg_start_line'] = i + 1
+            break
+    
+    for i, line in enumerate(lines):
+        if 'agent:end' in line and 'hooks.emit' in line:
+            analysis['has_agent_end'] = True
+            analysis['agent_end_line'] = i + 1
+            analysis['agent_end_indent'] = len(line) - len(line.lstrip())
+            break
+    
+    return analysis
+
+
+def find_brace_end(lines, start_idx: int) -> int:
+    """Find the closing brace for an open brace, handling strings."""
     depth = 0
     in_string = False
     string_char = None
@@ -108,7 +182,6 @@ def find_pattern_end(lines, start_idx, open_char="(", close_char=")"):
         while j < len(line):
             c = line[j]
             
-            # Handle string detection (both single and double quotes)
             if not in_string and c in ('"', "'"):
                 in_string = True
                 string_char = c
@@ -116,8 +189,7 @@ def find_pattern_end(lines, start_idx, open_char="(", close_char=")"):
                 continue
             
             if in_string:
-                # Handle escaped characters
-                if c == '\\':
+                if c == '\\' and j + 1 < len(line):
                     j += 2
                     continue
                 if c == string_char:
@@ -126,108 +198,137 @@ def find_pattern_end(lines, start_idx, open_char="(", close_char=")"):
                 j += 1
                 continue
             
-            # Skip f-string or format string prefixes
-            if c in ('f', 'F', 'r', 'R') and j + 1 < len(line) and line[j + 1] in ('"', "'"):
-                j += 1
-                continue
-            
-            if c == open_char:
+            if c in '({':
                 depth += 1
-            elif c == close_char:
+            elif c in ')}':
                 depth -= 1
                 if depth == 0:
                     return i
+            
             j += 1
+    
     return None
 
 
 def patch_run_py():
+    RUN_PY_PATH = Path.home() / ".hermes" / "hermes-agent" / "gateway" / "run.py"
+    
     if not RUN_PY_PATH.exists():
         print(f"ERROR: {RUN_PY_PATH} not found")
         return False
-
+    
     original = RUN_PY_PATH.read_text(encoding='utf-8')
-    lines = original.splitlines(keepends=True)
-
+    
     if 'Feishu Streaming Card Sidecar Event Forwarding' in original:
         print("INFO: Already patched")
         return True
-
-    # Find _handle_message_with_agent
-    target_idx = None
-    for i, line in enumerate(lines):
-        if 'async def _handle_message_with_agent(self, event, source, _quick_key: str):' in line:
-            target_idx = i
-            break
-
-    if target_idx is None:
-        print("ERROR: Could not find _handle_message_with_agent")
-        print("Hint: Hermes may have updated its code structure. Please check the latest Hermes version.")
+    
+    print("Analyzing Hermes run.py structure...")
+    analysis = analyze_run_py(original)
+    
+    print(f"  _handle_message_with_agent: {'found' if analysis['has_handle_message'] else 'NOT FOUND'} (line {analysis['handle_message_line']})")
+    print(f"  _msg_start_time = time.time(): {'found' if analysis['has_msg_start_time'] else 'NOT FOUND'} (line {analysis['msg_start_line']})")
+    print(f"  agent:end hook: {'found' if analysis['has_agent_end'] else 'NOT FOUND'} (line {analysis['agent_end_line']}, indent {analysis['agent_end_indent']})")
+    
+    # Find function bounds
+    func_start, func_end, func_indent = find_function_bounds(
+        original,
+        r'async def _handle_message_with_agent|def _handle_message_with_agent'
+    )
+    
+    if func_start is None:
+        print("\nERROR: Could not find _handle_message_with_agent function")
+        print("  The Hermes version may have renamed this function.")
+        print("  Please report this at: https://github.com/baileyh8/hermes-feishu-streaming-card/issues")
         return False
-
-    # Find _msg_start_time = time.time() within _handle_message_with_agent
-    msg_start_idx = None
-    for i in range(target_idx + 1, min(target_idx + 20, len(lines))):
-        if '_msg_start_time' in lines[i] and 'time.time()' in lines[i]:
-            msg_start_idx = i
-            break
-
+    
+    print(f"\nFound _handle_message_with_agent at lines {func_start+1}-{func_end+1}")
+    
+    # Find _msg_start_time
+    msg_start_idx = find_pattern_in_function(
+        original, func_start, func_end,
+        [r'_msg_start_time\s*=\s*time\.time\(\)', r'_msg_start_time\s*=\s*.*time']
+    )
+    
     if msg_start_idx is None:
-        print("ERROR: Could not find _msg_start_time inside _handle_message_with_agent")
-        print("Hint: Hermes version may have changed the message handling logic.")
+        print("\nERROR: Could not find _msg_start_time assignment in _handle_message_with_agent")
+        print("  The Hermes version may have changed how message timing is tracked.")
+        print("  Please report this at: https://github.com/baileyh8/hermes-feishu-streaming-card/issues")
         return False
-
-    # Insert after the line containing _msg_start_time
-    insert_idx = msg_start_idx + 1
-    lines.insert(insert_idx, MESSAGE_RECEIVED_INJECTION + "\n")
-    print(f"✓ Injected message_received at line {insert_idx + 1}")
-
-    # Find the agent:end hook call and insert finish event after it completes
-    # Pattern: await self.hooks.emit("agent:end", { ... })
-    # We need to find the closing }) of this call
-    agent_end_start = None
-    for i in range(target_idx, len(lines)):
-        if 'await self.hooks.emit("agent:end"' in lines[i] or "await self.hooks.emit('agent:end'" in lines[i]:
-            agent_end_start = i
-            break
-
-    if agent_end_start is not None:
-        # Find the end of this hook call - it's a multi-line call ending with })
-        # The opening { is on the same line or next line, we need to track depth
-        # Actually, let's find the closing }) after the start
-        # We track depth starting at 1 for the opening { after emit(
-        agent_end_end = find_pattern_end(lines, agent_end_start, "{", "}")
-        if agent_end_end is not None:
-            # Insert after the closing }) line
-            finish_insert_idx = agent_end_end + 1
-            # Skip any blank lines
-            while finish_insert_idx < len(lines) and not lines[finish_insert_idx].strip():
-                finish_insert_idx += 1
-            lines.insert(finish_insert_idx, FINISH_INJECTION + "\n")
-            print(f"✓ Injected finish event at line {finish_insert_idx + 1}")
-        else:
-            print("WARNING: Could not find agent:end hook end")
-    else:
-        print("WARNING: Could not find agent:end hook")
-
-    # Backup
+    
+    print(f"Found _msg_start_time at line {msg_start_idx+1}")
+    
+    # Find agent:end hook
+    agent_end_start = find_pattern_in_function(
+        original, func_start, func_end,
+        [r'await self\.hooks\.emit\(["\']agent:end["\']']
+    )
+    
+    if agent_end_start is None:
+        print("\nERROR: Could not find agent:end hook in _handle_message_with_agent")
+        print("  The Hermes version may have changed how agent:end is emitted.")
+        print("  Please report this at: https://github.com/baileyh8/hermes-feishu-streaming-card/issues")
+        return False
+    
+    # Find closing }) of the emit call
+    agent_end_end = find_brace_end(original.split('\n'), agent_end_start)
+    
+    if agent_end_end is None:
+        print("\nERROR: Could not find end of agent:end hook call")
+        return False
+    
+    print(f"Found agent:end at lines {agent_end_start+1}-{agent_end_end+1}")
+    
+    lines = original.split('\n')
+    
+    # Determine indentation for finish injection based on agent:end indent
+    agent_indent = len(lines[agent_end_start]) - len(lines[agent_end_start].lstrip())
+    
+    # Adjust finish injection indentation to match agent:end context
+    # The agent:end emit is inside a try block with 12 spaces, but the closing }) 
+    # is at 12 spaces, so we insert at the same level
+    adjusted_finish = FINISH_INJECTION
+    
+    # Find the base indentation level in FINISH_INJECTION (it's 12 spaces)
+    base_indent = 12
+    # We need to adjust to match agent_indent
+    indent_diff = agent_indent - base_indent
+    
+    if indent_diff != 0:
+        # Re-indent the FINISH_INJECTION
+        adjusted_lines = []
+        for line in FINISH_INJECTION.split('\n'):
+            if line.strip():
+                current_indent = len(line) - len(line.lstrip())
+                new_indent = current_indent + indent_diff
+                adjusted_lines.append(' ' * new_indent + line.lstrip())
+            else:
+                adjusted_lines.append(line)
+        adjusted_finish = '\n'.join(adjusted_lines)
+    
+    # Insert injections (in reverse order to preserve line numbers)
+    lines.insert(agent_end_end + 1, adjusted_finish)
+    lines.insert(msg_start_idx + 1, MESSAGE_RECEIVED_INJECTION)
+    
+    # Validate syntax
+    try:
+        import ast
+        result = '\n'.join(lines)
+        ast.parse(result)
+    except SyntaxError as e:
+        print(f"\nERROR: Patched code has syntax error: {e}")
+        print("This is a bug in the patch script. Please report at:")
+        print("  https://github.com/baileyh8/hermes-feishu-streaming-card/issues")
+        return False
+    
+    # Backup and write
     backup = RUN_PY_PATH.with_suffix('.py.backup')
     if not backup.exists():
         backup.write_text(original, encoding='utf-8')
-        print(f"Backup: {backup}")
-
-    # Validate syntax before writing
-    try:
-        import ast
-        ast.parse(''.join(lines))
-    except SyntaxError as e:
-        print(f"ERROR: Patched code has syntax error: {e}")
-        print("Restoring original file")
-        RUN_PY_PATH.write_text(original, encoding='utf-8')
-        return False
+        print(f"\nBackup saved: {backup}")
     
-    RUN_PY_PATH.write_text(''.join(lines), encoding='utf-8')
-    print(f"✓ Patched run.py successfully")
+    RUN_PY_PATH.write_text(result, encoding='utf-8')
+    print(f"Successfully patched run.py")
     return True
 
 
