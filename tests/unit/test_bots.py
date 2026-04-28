@@ -21,6 +21,27 @@ def test_legacy_feishu_config_becomes_implicit_default_bot():
     assert bot.app_secret == "secret"
 
 
+def test_explicit_default_bot_overrides_legacy_implicit_default():
+    registry = BotRegistry.from_config(
+        {
+            "feishu": {"app_id": "cli_legacy", "app_secret": "legacy-secret"},
+            "bots": {
+                "items": {
+                    "default": {
+                        "app_id": "cli_explicit",
+                        "app_secret": "explicit-secret",
+                    },
+                },
+            },
+        }
+    )
+
+    bot = registry.get("default")
+    assert registry.default_bot_id == "default"
+    assert bot.app_id == "cli_explicit"
+    assert bot.app_secret == "explicit-secret"
+
+
 def test_multiple_named_bots_and_explicit_default_are_loaded():
     registry = BotRegistry.from_config(
         {
@@ -66,6 +87,26 @@ def test_unbound_chat_uses_fallback_bot():
     registry = BotRegistry.from_config(
         {
             "feishu": {"app_id": "cli_default", "app_secret": "default-secret"},
+            "bindings": {"fallback_bot": "default"},
+        }
+    )
+
+    result = registry.resolve(RoutingContext(chat_id="oc_unknown"))
+
+    assert result.bot_id == "default"
+    assert result.reason == "bindings.fallback_bot"
+
+
+def test_fallback_bot_takes_precedence_over_bots_default_for_unbound_chat():
+    registry = BotRegistry.from_config(
+        {
+            "bots": {
+                "default": "support",
+                "items": {
+                    "default": {"app_id": "cli_default", "app_secret": "default-secret"},
+                    "support": {"app_id": "cli_support", "app_secret": "support-secret"},
+                },
+            },
             "bindings": {"fallback_bot": "default"},
         }
     )

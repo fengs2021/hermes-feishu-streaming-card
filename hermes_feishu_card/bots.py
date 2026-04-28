@@ -70,9 +70,15 @@ class BotRegistry:
         items = _mapping_or_empty(bots_section.get("items"))
 
         bots: dict[str, BotConfig] = {}
+        explicit_default_configured = False
+        for raw_bot_id in items:
+            if _normalize_bot_id(raw_bot_id) == "default":
+                explicit_default_configured = True
+                break
+
         if isinstance(feishu, dict) and (
             feishu.get("app_id") or feishu.get("app_secret")
-        ):
+        ) and not explicit_default_configured:
             bots["default"] = _bot_from_mapping("default", "Default", feishu)
 
         for raw_bot_id, value in items.items():
@@ -153,10 +159,10 @@ class FeishuClientFactory:
 def _select_default_bot_id(
     bots_section: dict[str, Any], bindings: dict[str, Any]
 ) -> tuple[str, str]:
-    if bots_section.get("default"):
-        return _normalize_bot_id(bots_section["default"]), "bots.default"
     if bindings.get("fallback_bot"):
         return _normalize_bot_id(bindings["fallback_bot"]), "bindings.fallback_bot"
+    if bots_section.get("default"):
+        return _normalize_bot_id(bots_section["default"]), "bots.default"
     return "default", "default"
 
 
