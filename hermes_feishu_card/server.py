@@ -336,10 +336,7 @@ def _is_client_factory(feishu_client: Any) -> bool:
 
 
 def _safe_update_error_message(bot_id: str | None, exc: Exception) -> str:
-    message = f"{exc.__class__.__name__}: {exc}"
-    if bot_id:
-        return f"bot_id={bot_id} {message}"
-    return message
+    return f"bot_id={bot_id or ''} {exc.__class__.__name__}"
 
 
 def _initial_routing_diagnostics(feishu_client: Any) -> dict[str, Any]:

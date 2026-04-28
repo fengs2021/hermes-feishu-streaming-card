@@ -14,6 +14,7 @@ class FakeFeishuClient:
         self.updated = []
         self.fail_send = False
         self.update_failures_remaining = 0
+        self.update_error_message = "update unavailable"
         self.update_delay = 0.0
 
     async def send_card(self, chat_id, card):
@@ -27,7 +28,7 @@ class FakeFeishuClient:
             await asyncio.sleep(self.update_delay)
         if self.update_failures_remaining > 0:
             self.update_failures_remaining -= 1
-            raise RuntimeError("update unavailable")
+            raise RuntimeError(self.update_error_message)
         self.updated.append((message_id, card))
 
 
@@ -749,8 +750,49 @@ async def test_routed_update_failure_reports_safe_bot_id():
 
     assert started.status == 200
     assert updated.status == 502
-    assert health_body["diagnostics"]["last_update_error"].startswith(
-        "bot_id=sales RuntimeError:"
-    )
+    assert health_body["diagnostics"]["last_update_error"] == "bot_id=sales RuntimeError"
     assert "secret" not in health_body["diagnostics"]["last_update_error"].lower()
     assert "token" not in health_body["diagnostics"]["last_update_error"].lower()
+
+
+async def test_routed_update_failure_redacts_sensitive_exception_text():
+    factory = FakeFeishuClientFactory()
+    factory.clients["sales"].update_failures_remaining = sidecar_server.UPDATE_MAX_ATTEMPTS
+    factory.clients["sales"].update_error_message = (
+        "Authorization Bearer tenant-token-secret app_secret=super-secret"
+    )
+
+    def bot_router(event):
+        return ("sales", "bindings.chats")
+
+    app = create_app(factory, bot_router=bot_router)
+    server = TestServer(app)
+    test_client = TestClient(server)
+    await test_client.start_server()
+    try:
+        await test_client.post(
+            "/events",
+            json=event_payload("message.started", 0, chat_id="oc_sales"),
+        )
+        updated = await test_client.post(
+            "/events",
+            json=event_payload(
+                "thinking.delta",
+                1,
+                {"text": "需要更新"},
+                chat_id="oc_sales",
+            ),
+        )
+        health = await test_client.get("/health")
+        health_body = await health.json()
+    finally:
+        await test_client.close()
+
+    last_update_error = health_body["diagnostics"]["last_update_error"]
+    assert updated.status == 502
+    assert "bot_id=sales" in last_update_error
+    assert "RuntimeError" in last_update_error
+    assert "tenant-token-secret" not in last_update_error
+    assert "super-secret" not in last_update_error
+    assert "Authorization" not in last_update_error
+    assert "Bearer" not in last_update_error
