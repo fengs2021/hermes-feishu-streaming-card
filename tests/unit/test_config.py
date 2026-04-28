@@ -28,7 +28,6 @@ def test_load_config_missing_file_returns_defaults(tmp_path):
         "feishu": {"app_id": "", "app_secret": ""},
         "bots": {"default": "default", "items": {}},
         "bindings": {
-            "fallback_bot": "default",
             "chats": {},
             "group_rules": {"enabled": False},
         },
@@ -98,7 +97,6 @@ def test_load_config_defaults_include_multi_bot_sections(tmp_path):
 
     assert config["bots"] == {"default": "default", "items": {}}
     assert config["bindings"] == {
-        "fallback_bot": "default",
         "chats": {},
         "group_rules": {"enabled": False},
     }

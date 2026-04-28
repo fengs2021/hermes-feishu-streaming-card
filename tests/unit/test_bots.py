@@ -1,6 +1,7 @@
 import pytest
 
 from hermes_feishu_card.bots import BotRegistry, FeishuClientFactory, RoutingContext
+from hermes_feishu_card.config import load_config
 
 
 def test_legacy_feishu_config_becomes_implicit_default_bot():
@@ -110,6 +111,57 @@ def test_fallback_bot_takes_precedence_over_bots_default_for_unbound_chat():
             "bindings": {"fallback_bot": "default"},
         }
     )
+
+    result = registry.resolve(RoutingContext(chat_id="oc_unknown"))
+
+    assert result.bot_id == "default"
+    assert result.reason == "bindings.fallback_bot"
+
+
+def test_loaded_config_without_fallback_uses_bots_default_for_unbound_chat(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        """
+bots:
+  default: support
+  items:
+    support:
+      app_id: cli_support
+      app_secret: support-secret
+""",
+        encoding="utf-8",
+    )
+    config = load_config(path)
+    registry = BotRegistry.from_config(config)
+
+    result = registry.resolve(RoutingContext(chat_id="oc_unknown"))
+
+    assert result.bot_id == "support"
+    assert result.reason == "bots.default"
+
+
+def test_loaded_config_explicit_fallback_overrides_bots_default_for_unbound_chat(
+    tmp_path,
+):
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        """
+bots:
+  default: support
+  items:
+    default:
+      app_id: cli_default
+      app_secret: default-secret
+    support:
+      app_id: cli_support
+      app_secret: support-secret
+bindings:
+  fallback_bot: default
+""",
+        encoding="utf-8",
+    )
+    config = load_config(path)
+    registry = BotRegistry.from_config(config)
 
     result = registry.resolve(RoutingContext(chat_id="oc_unknown"))
 

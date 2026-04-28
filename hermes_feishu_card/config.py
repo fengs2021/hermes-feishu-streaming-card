@@ -13,7 +13,6 @@ DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
     "feishu": {"app_id": "", "app_secret": ""},
     "bots": {"default": "default", "items": {}},
     "bindings": {
-        "fallback_bot": "default",
         "chats": {},
         "group_rules": {"enabled": False},
     },
