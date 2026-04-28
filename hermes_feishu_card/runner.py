@@ -50,7 +50,7 @@ def build_feishu_client(config: dict[str, Any]) -> NoopFeishuClient | FeishuClie
 
 
 def build_feishu_boundary(config: dict[str, Any]) -> FeishuBoundary:
-    registry = BotRegistry.from_config(config)
+    registry = BotRegistry.from_config(_normalize_feishu_boundary_config(config))
     factory = FeishuClientFactory(registry)
 
     def router(event: Any) -> Any:
@@ -75,6 +75,10 @@ def _has_any_feishu_credentials(config: dict[str, Any]) -> bool:
     if isinstance(feishu, dict) and feishu.get("app_id") and feishu.get("app_secret"):
         return True
 
+    return _has_any_named_bot_credentials(config)
+
+
+def _has_any_named_bot_credentials(config: dict[str, Any]) -> bool:
     bots = config.get("bots", {})
     items = bots.get("items", {}) if isinstance(bots, dict) else {}
     if not isinstance(items, dict):
@@ -83,6 +87,17 @@ def _has_any_feishu_credentials(config: dict[str, Any]) -> bool:
         isinstance(bot, dict) and bot.get("app_id") and bot.get("app_secret")
         for bot in items.values()
     )
+
+
+def _normalize_feishu_boundary_config(config: dict[str, Any]) -> dict[str, Any]:
+    feishu = config.get("feishu", {})
+    if (
+        isinstance(feishu, dict)
+        and _has_any_named_bot_credentials(config)
+        and not (feishu.get("app_id") and feishu.get("app_secret"))
+    ):
+        return {**config, "feishu": {}}
+    return config
 
 
 def main(argv: list[str] | None = None) -> int:
