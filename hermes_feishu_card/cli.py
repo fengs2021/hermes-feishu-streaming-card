@@ -466,6 +466,9 @@ def _run_bots(args: argparse.Namespace) -> int:
             items = _ensure_mapping_path(data, "bots", "items")
             if args.bot_id in items:
                 raise ValueError(f"bot {args.bot_id!r} already exists")
+            config = load_config(args.config)
+            if args.bot_id == "default" and _has_feishu_credentials(config):
+                raise ValueError("bot 'default' already exists")
             items[args.bot_id] = {
                 "name": args.bot_id,
                 "app_id": "",

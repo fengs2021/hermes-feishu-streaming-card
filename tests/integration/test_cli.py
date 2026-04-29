@@ -248,6 +248,27 @@ bots:
     assert "sales-secret" not in captured.err
 
 
+def test_bots_add_default_rejects_implicit_legacy_default_without_secret(tmp_path, capsys):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+feishu:
+  app_id: legacy-app
+  app_secret: legacy-secret
+""",
+        encoding="utf-8",
+    )
+
+    exit_code = main(["bots", "add", "default", "--config", str(config_path)])
+
+    captured = capsys.readouterr()
+    assert exit_code != 0
+    assert "exists" in captured.err.lower()
+    assert "legacy-secret" not in captured.err
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert "bots" not in config or "default" not in config.get("bots", {}).get("items", {})
+
+
 def test_bots_bind_chat_writes_yaml_binding(tmp_path, capsys):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
