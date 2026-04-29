@@ -40,43 +40,108 @@ Feishu CardKit HTTP client 已实现，并通过 mock Feishu server、真实 Fei
 
 V3.2 支持一个 sidecar 管理多个飞书机器人，并按 `chat_id/open_chat_id` 把群聊或私聊绑定到指定 bot。未绑定会话使用 fallback/default bot。插件不接管群聊触发规则；Hermes 仍负责决定何时响应，插件只负责把 Hermes 已经产生的回复渲染到对应飞书会话。
 
-配置示例：
+### 配置步骤
+
+1. **在飞书开放平台创建多个自建应用**，分别记录各自的 `app_id` 和 `app_secret`。
+2. **编辑 sidecar 配置文件**（默认 `~/.hermes_feishu_card/config.yaml`）：
+   - 在 `bots.items` 中定义每个 bot 的 `name`、`app_id`、`app_secret`
+   - 在 `bindings.chats` 中将群聊 `chat_id` 映射到 `bot_id`
+   - 设置 `bindings.fallback_bot` 为默认 bot ID（通常是 `default`）
+3. **重启 sidecar**：`hermes-feishu-card restart` 或重启 Hermes Gateway
+4. **验证路由**：`python3 -m hermes_feishu_card.cli doctor --config ~/.hermes_feishu_card/config.yaml`
+5. **发送测试消息**：在绑定的群聊中 @机器人，确认卡片由对应 bot 发出
+
+### 完整配置示例
 
 ```yaml
+server:
+  host: 127.0.0.1
+  port: 8765
+
 feishu:
-  app_id: "cli_default"
-  app_secret: "..."
+  # 默认 bot 凭据（用于 fallback_bot 或单 bot 模式）
+  app_id: "cli_default_app"
+  app_secret: "default_secret_xxx"
 
 bots:
   default: default
   items:
     sales:
       name: "销售群机器人"
-      app_id: "cli_sales"
-      app_secret: "..."
+      app_id: "cli_sales_xxxxx"
+      app_secret: "sales_secret_xxx"
+    support:
+      name: "技术支持机器人"
+      app_id: "cli_support_yyyyy"
+      app_secret: "support_secret_xxx"
 
 bindings:
   fallback_bot: default
   chats:
-    oc_sales_group: sales
-  # Reserved for a future release. V3.2 does not filter group triggers.
+    # 销售群 → sales bot
+    oc_5cc6a25d8815790fa890dd0226005e83: sales
+    # 技术支持群 → support bot
+    oc_7dd7b36e9826701fb901ee0337007f94: support
   group_rules:
-    enabled: false
+    enabled: false  # V3.2 不启用群聊触发过滤
+
+card:
+  title: Hermes Agent
+  max_wait_ms: 800
+  max_chars: 240
+  footer_fields:
+    - duration
+    - model
+    - input_tokens
+    - output_tokens
+    - context
 ```
 
-常用命令：
+> **注意**：`feishu.app_id`/`feishu.app_secret` 仅用于未配置多 bot 或作为 fallback。建议为每个 bot 提供独立凭据，避免权限交叉。
+
+### 常用命令
 
 ```bash
+# 列出所有已注册的 bots
 python3 -m hermes_feishu_card.cli bots list --config ~/.hermes_feishu_card/config.yaml
-python3 -m hermes_feishu_card.cli bots bind-chat <chat_id> <bot_id> --config ~/.hermes_feishu_card/config.yaml
-python3 -m hermes_feishu_card.cli bots unbind-chat <chat_id> --config ~/.hermes_feishu_card/config.yaml
+
+# 查看单个 bot 详情
+python3 -m hermes_feishu_card.cli bots show sales --config ~/.hermes_feishu_card/config.yaml
+
+# 绑定群聊到 bot
+python3 -m hermes_feishu_card.cli bots bind-chat oc_xxxx sales --config ~/.hermes_feishu_card/config.yaml
+
+# 解绑群聊
+python3 -m hermes_feishu_card.cli bots unbind-chat oc_xxxx --config ~/.hermes_feishu_card/config.yaml
+
+# 添加新 bot
+python3 -m hermes_feishu_card.cli bots add --id support --name "Support Bot" --app-id cli_support_xxx --app-secret "xxx" --config ~/.hermes_feishu_card/config.yaml
+
+# 删除 bot
+python3 -m hermes_feishu_card.cli bots remove support --config ~/.hermes_feishu_card/config.yaml
+
+# 健康检查与路由诊断
+curl http://127.0.0.1:8765/health | jq '.routing'
 ```
 
-故障排查：
+### 故障排查
 
-- 机器人回复错误：检查 `bindings.chats` 配置
-- 群卡片未发送：确认机器人在群中、有权限、Hermes 已触发、`/health.routing` 正常
-- 未知 bot 绑定：运行 `doctor` 或 `bots list` 排查
+- **机器人回复错误**：检查 `bindings.chats` 中 `chat_id` 是否与飞书群聊 ID 一致（注意 `oc_` 前缀）
+- **群卡片未发送**：
+  1. 确认对应 bot 已加入群聊且开启「允许群成员邀请」权限
+  2. 确认 bot 有「发送消息卡片」和「更新消息卡片」的 API 权限
+  3. 确认 Hermes 已触发回复（检查 Hermes 日志）
+  4. 运行 `doctor` 或查看 `/health.routing` 确认路由正确
+- **未知 bot 绑定**：运行 `python3 -m hermes_feishu_card.cli doctor` 检查配置语法和凭据
+- **sidecar 未启动**：`ps aux | grep hermes_feishu_card.runner` 或 `hermes logs` 查看错误
+
+### 路由逻辑细节
+
+- 事件到达 sidecar → `BotRegistry.resolve(RoutingContext)` → 查找 `bindings.chats[chat_id]` → 匹配 bot
+- 未匹配 → 使用 `bindings.fallback_bot` 指定的 bot
+- `fallback_bot` 未配置或无效 → 使用 `bots.default`（通常为 `"default"`）
+- 每个 bot 使用独立的 `FeishuClient`（独立的 app_id/app_secret 凭证池）
+- `message.started` 携带的 `chat_type`、`tenant_key`、`agent_id`、`profile_id` 已透传，供未来群聊过滤规则使用（当前版本忽略）
 
 ## 环境依赖
 
@@ -369,6 +434,10 @@ python3 -m pytest tests/integration/test_feishu_client_http.py -q
 - 真实长卡压力测试：同一张飞书卡片更新到 16k 中文字符成功
 - fresh Hermes `v2026.4.23`：已完成 `doctor -> install -> doctor -> restore -> doctor` 闭环
 - 普通用户整合安装器：`setup --hermes-dir ... --yes` 已覆盖自动生成配置、安装 hook、启动 sidecar 和健康检查
+
+## 更新日志
+
+详见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 文档
 

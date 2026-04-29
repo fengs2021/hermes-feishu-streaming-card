@@ -36,40 +36,108 @@ It is designed for users who want visible tool progress, clean chat history, sta
 
 V3.2 adds multi-bot routing and formal group chat support: one sidecar manages multiple Feishu bots and routes cards by `chat_id/open_chat_id` to the bound bot. Unbound chats use the fallback/default bot. This plugin does not decide group trigger rules; Hermes still decides when to respond, and the plugin only renders cards for events Hermes already emits.
 
-Example config:
+### Configuration Steps
+
+1. **Create separate Feishu custom apps** for each bot you need. Record each app's `app_id` and `app_secret`.
+2. **Edit the sidecar config** (default `~/.hermes_feishu_card/config.yaml`):
+   - Define each bot under `bots.items` with `name`, `app_id`, `app_secret`
+   - Map chat IDs to bot IDs in `bindings.chats`
+   - Set `bindings.fallback_bot` to the default bot ID (usually `"default"`)
+3. **Restart the sidecar**: `hermes-feishu-card restart` or restart Hermes Gateway
+4. **Verify routing**: `python3 -m hermes_feishu_card.cli doctor --config ~/.hermes_feishu_card/config.yaml`
+5. **Test**: send a message in a bound group; the card should be sent by the correct bot.
+
+### Full Configuration Example
 
 ```yaml
+server:
+  host: 127.0.0.1
+  port: 8765
+
 feishu:
-  app_id: "cli_default"
-  app_secret: "..."
+  # Default bot credentials (used for fallback_bot or single-bot mode)
+  app_id: "cli_default_app"
+  app_secret: "default_secret_xxx"
 
 bots:
   default: default
   items:
     sales:
       name: "Sales Group Bot"
-      app_id: "cli_sales"
-      app_secret: "..."
+      app_id: "cli_sales_xxxxx"
+      app_secret: "sales_secret_xxx"
+    support:
+      name: "Support Bot"
+      app_id: "cli_support_yyyyy"
+      app_secret: "support_secret_xxx"
 
 bindings:
   fallback_bot: default
   chats:
-    oc_sales_group: sales
+    # Sales group → sales bot
+    oc_5cc6a25d8815790fa890dd0226005e83: sales
+    # Support group → support bot
+    oc_7dd7b36e9826701fb901ee0337007f94: support
+  group_rules:
+    enabled: false  # V3.2 does not filter group triggers
+
+card:
+  title: Hermes Agent
+  max_wait_ms: 800
+  max_chars: 240
+  footer_fields:
+    - duration
+    - model
+    - input_tokens
+    - output_tokens
+    - context
 ```
 
-Common commands:
+> **Note**: `feishu.app_id` / `feishu.app_secret` are only used for the fallback bot or single-bot setups. For multi-bot, provide per-bot credentials to avoid cross-bot permission issues.
+
+### Common Commands
 
 ```bash
+# List all registered bots
 python3 -m hermes_feishu_card.cli bots list --config ~/.hermes_feishu_card/config.yaml
-python3 -m hermes_feishu_card.cli bots bind-chat <chat_id> <bot_id> --config ~/.hermes_feishu_card/config.yaml
-python3 -m hermes_feishu_card.cli bots unbind-chat <chat_id> --config ~/.hermes_feishu_card/config.yaml
+
+# Show bot details
+python3 -m hermes_feishu_card.cli bots show sales --config ~/.hermes_feishu_card/config.yaml
+
+# Bind a chat to a bot
+python3 -m hermes_feishu_card.cli bots bind-chat oc_xxxx sales --config ~/.hermes_feishu_card/config.yaml
+
+# Unbind a chat
+python3 -m hermes_feishu_card.cli bots unbind-chat oc_xxxx --config ~/.hermes_feishu_card/config.yaml
+
+# Add a new bot
+python3 -m hermes_feishu_card.cli bots add --id support --name "Support Bot" --app-id cli_support_xxx --app-secret "xxx" --config ~/.hermes_feishu_card/config.yaml
+
+# Remove a bot
+python3 -m hermes_feishu_card.cli bots remove support --config ~/.hermes_feishu_card/config.yaml
+
+# Health check & routing diagnostics
+curl http://127.0.0.1:8765/health | jq '.routing'
 ```
 
-Troubleshooting:
+### Troubleshooting
 
-- Wrong bot replied: check `bindings.chats`
-- Group card not sent: verify bot is in the group, has permissions, Hermes triggered, and `/health.routing` looks healthy
-- Unknown bot binding: run `doctor` or `bots list`
+- **Wrong bot replied**: check `bindings.chats` mapping; ensure `chat_id` matches the Feishu group's `oc_...` ID
+- **Group card not sent**:
+  1. Verify the bot has joined the group and has card-send permissions
+  2. Confirm bot has `send_message` and `update_message` API scopes
+  3. Ensure Hermes actually triggered a reply (check Hermes logs)
+  4. Run `doctor` or inspect `/health.routing` to verify routing is healthy
+- **Unknown bot binding**: run `python3 -m hermes_feishu_card.cli doctor` to validate config and credentials
+- **Sidecar not running**: `ps aux | grep hermes_feishu_card.runner` or check `hermes logs`
+
+### Routing Logic Details
+
+- Event arrives → `BotRegistry.resolve(RoutingContext)` → looks up `bindings.chats[chat_id]` → selects bot
+- No match → uses `bindings.fallback_bot`
+- If `fallback_bot` missing/invalid → falls back to `bots.default` (typically `"default"`)
+- Each bot gets its own `FeishuClient` with its own `app_id`/`app_secret` credential pool
+- `message.started` carries `chat_type`, `tenant_key`, `agent_id`, `profile_id` — currently passed through for future group filtering (no-op in V3.2)
 
 ## Requirements
 
@@ -363,6 +431,10 @@ Current V3.2.0 acceptance status:
 - Real long-card stress test updated one Feishu card to 16k Chinese characters
 - Fresh Hermes `v2026.4.23`: `doctor -> install -> doctor -> restore -> doctor` loop completed
 - Ordinary-user `setup --hermes-dir ... --yes` covers config creation, hook install, sidecar startup, and health check
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 ## Documentation
 
