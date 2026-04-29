@@ -32,13 +32,34 @@ Use this plugin if you want Hermes Agent replies inside Feishu to appear like mo
 
 It is designed for users who want visible tool progress, clean chat history, stable Markdown/table/list rendering, token/context stats, and minimal intrusion into Hermes Gateway.
 
+## Core Features
+
+- **Streaming thinking**: accumulates `thinking.delta` content and filters `<think>`/`</think>` tags
+- **Progressive answer updates**: streams `answer.delta` into one card and replaces thinking content with the final answer on completion
+- **Tool call tracking**: supports `tool.updated`, real-time tool counts/status, and final total counts
+- **Final-state convergence**: handles `message.completed`/`message.failed`; normal card states stay simple: thinking or completed
+- **Runtime footer**: shows duration, model, input tokens, output tokens, context length, and context percentage by default
+- **Stable long-text rendering**: splits card body into safe Markdown blocks; real stress testing covered 16k Chinese characters in one Feishu card
+- **Fault isolation**: when the sidecar is unavailable, the Hermes hook fails open and Hermes native text continues to work
+- **Safe installer**: fails closed, checks Hermes version/code shape/backup/manifest before writing
+- **Recovery path**: `restore` and `uninstall` refuse to overwrite user-modified Hermes files
+
 ## V3.2 Multi-bot And Group Chat
 
 V3.2 adds multi-bot routing and formal group chat support: one sidecar manages multiple Feishu bots and routes cards by `chat_id/open_chat_id` to the bound bot. Unbound chats use the fallback/default bot. This plugin does not decide group trigger rules; Hermes still decides when to respond, and the plugin only renders cards for events Hermes already emits.
 
+### Key Features
+
+- **Multi-bot registry**: Define multiple bots under `bots.items` with independent `app_id`/`app_secret`
+- **Chat-to-bot bindings**: `bindings.chats` maps `chat_id` → `bot_id`; unmatched chats fall back to `bindings.fallback_bot`
+- **Group rules framework**: `bindings.group_rules.enabled` reserved for future filtering (no-op in V3.2)
+- **Bot management CLI**: `hermes_feishu_card.cli bots` provides `list`/`show`/`add`/`remove`/`bind-chat`/`unbind-chat`
+- **Sidecar routing diagnostics**: `/health.routing` exposes `bot_count`, `chat_binding_count`, `last_route`, and bot details
+- **Routing context passthrough**: `message.started` fields (`chat_type`, `tenant_key`, `agent_id`, `profile_id`) are extracted and forwarded (unused in V3.2, for future features)
+
 ### Configuration Steps
 
-1. **Create separate Feishu custom apps** for each bot you need. Record each app's `app_id` and `app_secret`.
+1. **Create separate Feishu custom apps** for each bot. Record each app's `app_id` and `app_secret`.
 2. **Edit the sidecar config** (default `~/.hermes_feishu_card/config.yaml`):
    - Define each bot under `bots.items` with `name`, `app_id`, `app_secret`
    - Map chat IDs to bot IDs in `bindings.chats`
@@ -222,7 +243,9 @@ python3 -m hermes_feishu_card.cli uninstall --hermes-dir ~/.hermes/hermes-agent 
 
 ## Configuration
 
-Copy `config.yaml.example` to a safe local path before adding credentials. Do not commit a real App Secret.
+Copy `config.yaml.example` to a local secure location and fill in credentials. Never commit real App Secrets to the repository.
+
+**Single-bot minimal config**:
 
 ```yaml
 server:
@@ -232,8 +255,6 @@ server:
 feishu:
   app_id: ""
   app_secret: ""
-  base_url: https://open.feishu.cn/open-apis
-  timeout_seconds: 30
 
 card:
   title: Hermes Agent
@@ -247,7 +268,51 @@ card:
     - context
 ```
 
-`card.title` controls the Feishu card header title. `footer_fields` controls footer fields and order. Supported values are `duration`, `model`, `input_tokens`, `output_tokens`, and `context`.
+**V3.2 multi-bot configuration** (new `bots` and `bindings` sections):
+
+```yaml
+server:
+  host: 127.0.0.1
+  port: 8765
+
+feishu:
+  # Only used for fallback or single-bot mode; multi-bot should define per-bot credentials
+  app_id: ""
+  app_secret: ""
+
+bots:
+  default: default        # default bot ID
+  items:                  # define multiple bots
+    sales:
+      name: "Sales Group Bot"
+      app_id: "cli_sales_xxx"
+      app_secret: "xxx"
+    support:
+      name: "Support Bot"
+      app_id: "cli_support_yyy"
+      app_secret: "yyy"
+
+bindings:
+  fallback_bot: default   # bot ID for unbound chats
+  chats:                  # chat_id → bot_id mapping
+    oc_5cc6a25d8815790fa890dd0226005e83: sales
+    oc_7dd7b36e9826701fb901ee0337007f94: support
+  group_rules:
+    enabled: false        # V3.2 does not filter group triggers
+
+card:
+  title: Hermes Agent
+  max_wait_ms: 800
+  max_chars: 240
+  footer_fields:
+    - duration
+    - model
+    - input_tokens
+    - output_tokens
+    - context
+```
+
+`card.title` controls the Feishu card header title. `footer_fields` controls which fields appear in the footer and their order; valid values are `duration`, `model`, `input_tokens`, `output_tokens`, `context`.
 
 Default footer format:
 
@@ -390,7 +455,7 @@ Check Hermes `config.yaml` for `streaming.enabled: true` and `streaming.transpor
 
 ### Duplicate cards appear
 
-Check `feishu_send_successes`, `events_received`, and `events_rejected` in `/health`. V3.1.0 uses a per-message lock and message_id mapping, so one Hermes message should create one Feishu card.
+Check `feishu_send_successes`, `events_received`, and `events_rejected` in `/health`. V3.2.0 uses a per-message lock and message_id mapping, so one Hermes message should create one Feishu card.
 
 ### Gray native text appears
 
@@ -398,7 +463,7 @@ Check whether the sidecar received and applied `message.completed`. After the si
 
 ### Footer token numbers look wrong
 
-V3.1.0 filters obviously abnormal token totals. If the footer still looks wrong, inspect the `tokens` and `context` metadata passed by Hermes Gateway.
+V3.2.0 filters obviously abnormal token totals. If the footer still looks wrong, inspect the `tokens` and `context` metadata passed by Hermes Gateway.
 
 ### Restore fails
 
@@ -423,14 +488,16 @@ python3 -m pytest tests/integration/test_feishu_client_http.py -q
 
 Current V3.2.0 acceptance status:
 
-- Full automated test suite: `396 passed`
+- Full automated test suite: **398 passed**
 - GitHub Actions: Python 3.9 / 3.12 matrix passed
 - Installer/restore tests cover backups, manifest, duplicate install, modified-file refusal, uninstall, and restore idempotency
 - Real Hermes Gateway E2E verified card creation, streaming updates, tool counts, completion state, and footer metadata
 - Real Feishu app verified in-card updates with no duplicate gray native messages
 - Real long-card stress test updated one Feishu card to 16k Chinese characters
-- Fresh Hermes `v2026.4.23`: `doctor -> install -> doctor -> restore -> doctor` loop completed
+- Fresh Hermes `v2026.4.23`: `doctor → install → doctor → restore → doctor` loop completed
 - Ordinary-user `setup --hermes-dir ... --yes` covers config creation, hook install, sidecar startup, and health check
+- V3.2 multi-bot routing verified: `oc_sales` → `sales` bot routing correct, `/health.routing` diagnostics healthy
+- V3.2 multi-bot routing verified: `oc_sales` → `sales` bot routing correct, `/health.routing` diagnostics healthy
 
 ## Changelog
 

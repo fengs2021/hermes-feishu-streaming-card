@@ -211,7 +211,7 @@ def _ensure_setup_config(config_path: Path) -> bool:
 
 
 def _default_setup_config_text() -> str:
-    return """# Hermes Feishu Streaming Card V3 setup configuration
+    return """# Hermes Feishu Streaming Card V3.2 configuration
 # Prefer FEISHU_APP_ID and FEISHU_APP_SECRET environment variables in real deployments.
 
 server:
@@ -223,6 +223,19 @@ feishu:
   app_secret: ""
   base_url: https://open.feishu.cn/open-apis
   timeout_seconds: 30
+
+# V3.2 Multi-bot configuration.
+# For single-bot setups, leave `bots.items` empty and use `feishu.app_id`/`feishu.app_secret`.
+# For multi-bot, define each bot under `bots.items` and map chat IDs in `bindings.chats`.
+bots:
+  default: default
+  items: {}
+
+bindings:
+  fallback_bot: default
+  chats: {}
+  group_rules:
+    enabled: false  # V3.2 does not filter group triggers
 
 card:
   title: Hermes Agent

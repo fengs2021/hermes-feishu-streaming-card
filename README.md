@@ -16,33 +16,32 @@ Feishu CardKit HTTP client 已实现，并通过 mock Feishu server、真实 Fei
 
 ## 核心功能
 
-- 流式思考展示：支持 `thinking.delta` 累积渲染，自动过滤 `<think>` / `</think>` 标签。
-- 渐进式答案更新：支持 `answer.delta` 分段进入同一张卡片，完成后用最终答案覆盖思考内容。
-- 工具调用跟踪：支持 `tool.updated`，实时显示工具调用次数和状态，完成后保留总次数。
-- 最终态收敛：支持 `message.completed` / `message.failed`，卡片状态只保留“思考中”和“已完成/处理失败”这类清晰状态。
-- 运行统计 footer：默认显示耗时、当前模型、输入 token、输出 token、上下文长度和百分比。
-- 长文本稳定渲染：卡片正文会按安全长度拆分为多个 Markdown 元素，真实长卡压力测试已覆盖 16k 中文字符。
-- 故障隔离：sidecar 不可用时 Hermes hook fail-open，Hermes 原生文本回复继续运行。
-- 安全安装：安装器 fail-closed，写入前检查 Hermes 版本、代码结构、备份和 manifest。
-- 自动恢复：支持 `restore` 和 `uninstall`，检测到用户改动时拒绝覆盖，避免破坏 Hermes 原文件。
+- **流式思考展示**：支持 `thinking.delta` 累积渲染，自动过滤 `<think>`/`</think>` 标签
+- **渐进式答案更新**：`answer.delta` 分段进入同一张卡片，完成后用最终答案覆盖思考内容
+- **工具调用跟踪**：`tool.updated` 实时显示工具调用次数和状态，完成后保留总次数
+- **最终态收敛**：`message.completed`/`message.failed` 只保留“思考中”和“已完成/处理失败”清晰状态
+- **运行统计 footer**：默认显示耗时、模型、输入/输出 token、上下文长度和百分比
+- **长文本稳定渲染**：卡片正文按安全长度拆分为多个 Markdown 元素，16k+ 中文字符压力测试通过
+- **故障隔离**：sidecar 不可用 Hermes hook fail-open，原生文本回复继续运行
+- **安全安装**：安装器 fail-closed，写入前检查 Hermes 版本、代码结构、备份和 manifest
+- **自动恢复**：`restore`/`uninstall` 检测用户改动时拒绝覆盖，避免破坏 Hermes 原文件
 
-## 适用场景
+## V3.2 多机器人群聊路由
 
-这个插件适合希望在飞书中直接使用 Hermes Agent 的用户，尤其适合以下场景：
+V3.2 引入**多 bot 注册与路由**：单个 sidecar 管理多个飞书机器人，根据 `chat_id`/`open_chat_id` 将群聊或私聊路由到指定 bot。未绑定会话使用 fallback/default bot。插件**不管**群聊触发规则，Hermes 仍决定何时响应，插件仅负责把 Hermes 已产生的回复渲染到对应飞书会话。
 
-- 希望 AI 回复像 ChatGPT 一样实时出现，而不是等完整回答结束。
-- 希望工具调用过程可见，知道 Agent 是否正在执行命令、检索或调用工具。
-- 希望飞书聊天记录保持干净，避免流式文本刷屏。
-- 希望长 Markdown、表格、列表和统计信息在卡片内稳定展示。
-- 希望对 Hermes Gateway 的侵入尽可能小，方便升级和回滚。
+### 主要特性
 
-## V3.2 多 bot 与群聊
-
-V3.2 支持一个 sidecar 管理多个飞书机器人，并按 `chat_id/open_chat_id` 把群聊或私聊绑定到指定 bot。未绑定会话使用 fallback/default bot。插件不接管群聊触发规则；Hermes 仍负责决定何时响应，插件只负责把 Hermes 已经产生的回复渲染到对应飞书会话。
+- **Bot Registry**：`bots.items` 定义多个 bot，每个含独立 `app_id`/`app_secret`
+- **Chat Bindings**：`bindings.chats` 映射 `chat_id → bot_id`，未匹配走 `bindings.fallback_bot`
+- **Group Rules 框架**：`bindings.group_rules.enabled` 为未来群聊过滤预留（V3.2 为 `false`，无实际过滤）
+- **Bot CLI 管理**：`hermes_feishu_card.cli bots` 支持 `list`/`show`/`add`/`remove`/`bind-chat`/`unbind-chat`
+- **Sidecar 路由诊断**：`/health.routing` 暴露 `bot_count`、`chat_binding_count`、`last_route`、`bots[]` 详情
+- **透传路由上下文**：`message.started` 的 `chat_type`、`tenant_key`、`agent_id`、`profile_id` 已提取并传递给 bot 客户端（当前版本不使用，供未来功能）
 
 ### 配置步骤
 
-1. **在飞书开放平台创建多个自建应用**，分别记录各自的 `app_id` 和 `app_secret`。
+1. **在飞书开放平台创建多个自建应用**，分别记录 `app_id` 和 `app_secret`。
 2. **编辑 sidecar 配置文件**（默认 `~/.hermes_feishu_card/config.yaml`）：
    - 在 `bots.items` 中定义每个 bot 的 `name`、`app_id`、`app_secret`
    - 在 `bindings.chats` 中将群聊 `chat_id` 映射到 `bot_id`
@@ -140,7 +139,7 @@ curl http://127.0.0.1:8765/health | jq '.routing'
 - 事件到达 sidecar → `BotRegistry.resolve(RoutingContext)` → 查找 `bindings.chats[chat_id]` → 匹配 bot
 - 未匹配 → 使用 `bindings.fallback_bot` 指定的 bot
 - `fallback_bot` 未配置或无效 → 使用 `bots.default`（通常为 `"default"`）
-- 每个 bot 使用独立的 `FeishuClient`（独立的 app_id/app_secret 凭证池）
+- 每个 bot 使用独立的 `FeishuClient`（独立的 `app_id`/`app_secret` 凭证池）
 - `message.started` 携带的 `chat_type`、`tenant_key`、`agent_id`、`profile_id` 已透传，供未来群聊过滤规则使用（当前版本忽略）
 
 ## 环境依赖
@@ -228,6 +227,8 @@ python3 -m hermes_feishu_card.cli uninstall --hermes-dir ~/.hermes/hermes-agent 
 
 复制 `config.yaml.example` 到本机安全位置后再填写凭据。不要把真实 App Secret 提交到仓库。
 
+**单 bot 最小配置**：
+
 ```yaml
 server:
   host: 127.0.0.1
@@ -236,8 +237,50 @@ server:
 feishu:
   app_id: ""
   app_secret: ""
-  base_url: https://open.feishu.cn/open-apis
-  timeout_seconds: 30
+
+card:
+  title: Hermes Agent
+  max_wait_ms: 800
+  max_chars: 240
+  footer_fields:
+    - duration
+    - model
+    - input_tokens
+    - output_tokens
+    - context
+```
+
+**V3.2 多 bot 配置**（新增 `bots` 与 `bindings`）：
+
+```yaml
+server:
+  host: 127.0.0.1
+  port: 8765
+
+feishu:
+  # 仅作为 fallback 或单 bot 使用；多 bot 建议在每个 bot 下独立配置
+  app_id: ""
+  app_secret: ""
+
+bots:
+  default: default        # 默认 bot ID
+  items:                  # 多 bot 定义
+    sales:
+      name: "销售群机器人"
+      app_id: "cli_sales_xxx"
+      app_secret: "xxx"
+    support:
+      name: "技术支持机器人"
+      app_id: "cli_support_yyy"
+      app_secret: "yyy"
+
+bindings:
+  fallback_bot: default   # 未绑定会话使用的 bot ID
+  chats:                  # chat_id → bot_id 映射
+    oc_5cc6a25d8815790fa890dd0226005e83: sales
+    oc_7dd7b36e9826701fb901ee0337007f94: support
+  group_rules:
+    enabled: false        # V3.2 暂不启用群聊触发过滤
 
 card:
   title: Hermes Agent
@@ -393,7 +436,7 @@ sidecar 持有完整会话状态，负责飞书 CardKit 边界。这样可以把
 
 ### 出现重复卡片
 
-检查 `/health` 中的 `feishu_send_successes`、`events_received` 和 `events_rejected`。V3.1.0 对同一个 Hermes message 使用 per-message lock 和 message_id 映射，正常情况下同一轮对话只创建一张卡片。
+检查 `/health` 中的 `feishu_send_successes`、`events_received` 和 `events_rejected`。V3.2.0 对同一个 Hermes message 使用 per-message lock 和 message_id 映射，正常情况下同一轮对话只创建一张卡片。
 
 ### 出现灰色原生文本消息
 
@@ -401,7 +444,7 @@ sidecar 持有完整会话状态，负责飞书 CardKit 边界。这样可以把
 
 ### footer token 数异常
 
-V3.1.0 会过滤明显异常的 token 累计值。仍异常时，优先检查 Hermes Gateway 传入的 `tokens` 和 `context` 元数据。
+V3.2.0 会过滤明显异常的 token 累计值。仍异常时，优先检查 Hermes Gateway 传入的 `tokens` 和 `context` 元数据。
 
 ### 恢复失败
 
@@ -426,14 +469,15 @@ python3 -m pytest tests/integration/test_feishu_client_http.py -q
 
 当前 V3.2.0 验收状态：
 
-- 自动化全量测试：`396 passed`
+- 自动化全量测试：**398 passed**
 - GitHub Actions：Python 3.9 / 3.12 测试矩阵通过
 - 安装/恢复专项测试：覆盖备份、manifest、重复安装、用户改动拒绝恢复、卸载和恢复幂等
 - 真实 Hermes Gateway E2E：已验证新卡片创建、流式更新、工具调用计数、完成状态和 footer 元数据
 - 真实飞书应用验证：已验证卡片内更新成功，无重复灰色原生消息
 - 真实长卡压力测试：同一张飞书卡片更新到 16k 中文字符成功
-- fresh Hermes `v2026.4.23`：已完成 `doctor -> install -> doctor -> restore -> doctor` 闭环
+- fresh Hermes `v2026.4.23`：已完成 `doctor → install → doctor → restore → doctor` 闭环
 - 普通用户整合安装器：`setup --hermes-dir ... --yes` 已覆盖自动生成配置、安装 hook、启动 sidecar 和健康检查
+- V3.2 多 bot 路由验证：`oc_sales` → `sales` bot 路由正确，`/health.routing` 诊断正常
 
 ## 更新日志
 
