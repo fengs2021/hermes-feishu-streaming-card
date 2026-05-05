@@ -30,8 +30,8 @@ def render_card(
     elements.extend(
         [
             {"tag": "hr", "element_id": "main_divider"},
-            {"tag": "markdown", "element_id": "tool_summary", "content": tool_summary},
-            {"tag": "markdown", "element_id": "footer", "content": footer, "text_size": "x-small"},
+            {"tag": "lark_md", "element_id": "tool_summary", "content": tool_summary},
+            {"tag": "lark_md", "element_id": "footer", "content": footer, "text_size": "x-small"},
         ]
     )
     return {
@@ -66,7 +66,7 @@ def _render_main_content_elements(main_text: str) -> list[Dict[str, Any]]:
     elements = []
     for index, chunk in enumerate(chunks):
         element_id = "main_content" if index == 0 else f"main_content_{index}"
-        elements.append({"tag": "markdown", "element_id": element_id, "content": chunk})
+        elements.append({"tag": "lark_md", "element_id": element_id, "content": chunk})
     return elements
 
 
