@@ -50,7 +50,10 @@ def test_tool_updates_count_unique_events():
     session.apply(event("tool.updated", 2, {"tool_id": "t1", "name": "search", "status": "completed"}))
     session.apply(event("tool.updated", 3, {"tool_id": "t2", "name": "fetch", "status": "completed"}))
     assert session.tool_count == 2
-    assert session.tools["t1"].status == "completed"
+    # 第一个条目(search)已被 completed 事件更新
+    assert session.tools[0].name == "search"
+    assert session.tools[0].status == "completed"
+    assert session.tools[1].name == "fetch"
 
 
 def test_completion_replaces_thinking_with_answer():
@@ -136,18 +139,18 @@ def test_rejects_mismatched_conversation_id_and_chat_id():
 
 def test_missing_or_empty_tool_id_does_not_create_tool():
     session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
-    assert session.apply(event("tool.updated", 1, {"name": "search", "status": "running"}))
-    assert session.apply(event("tool.updated", 2, {"tool_id": "", "name": "fetch", "status": "completed"}))
+    # 现在以 name 为准；没有 name 且没有 tool_id 时不创建
+    assert session.apply(event("tool.updated", 1, {"name": "", "status": "running"}))
+    assert session.apply(event("tool.updated", 2, {"tool_id": "", "name": "", "status": "completed"}))
     assert session.tool_count == 0
     assert session.last_sequence == 2
 
 
 def test_tool_metadata_uses_defaults_for_non_strings():
     session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
+    # name=None 时不创建工具条目
     assert session.apply(event("tool.updated", 1, {"tool_id": "t1", "name": None, "status": None, "detail": None}))
-    assert session.tools["t1"].name == "t1"
-    assert session.tools["t1"].status == "running"
-    assert session.tools["t1"].detail == ""
+    assert session.tool_count == 0
 
 
 def test_completion_bad_metadata_uses_safe_defaults():

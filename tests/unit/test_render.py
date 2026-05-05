@@ -5,7 +5,7 @@ from hermes_feishu_card.session import CardSession, ToolState
 def test_render_thinking_card_has_two_state_label_and_tools():
     session = CardSession(conversation_id="chat-1", message_id="msg-1", chat_id="oc_abc")
     session.thinking_text = "正在分析。"
-    session.tools["t1"] = ToolState(tool_id="t1", name="search", status="running")
+    session.tools.append(ToolState(tool_id="t1", name="search", status="running"))
     card = render_card(session)
     assert card["schema"] == "2.0"
     assert card["header"]["title"]["content"] == "Hermes Agent"

@@ -77,9 +77,20 @@ def _split_text(text: str, chunk_size: int) -> list[str]:
 def _render_tool_summary(session: CardSession) -> str:
     if not session.tools:
         return "工具调用 0 次"
+    # 按工具名统计
+    from collections import Counter
+    name_counts = Counter(t.name for t in session.tools)
     lines = [f"工具调用 {session.tool_count} 次"]
-    for tool in session.tools.values():
-        lines.append(f"- `{tool.name}`: {tool.status}")
+    for name, count in name_counts.most_common():
+        statuses = [t.status for t in session.tools if t.name == name]
+        running = statuses.count("running")
+        completed = statuses.count("completed")
+        parts = [f"`{name}`: {count}次"]
+        if completed:
+            parts.append(f"{completed}完成")
+        if running:
+            parts.append(f"{running}执行中")
+        lines.append("- " + ", ".join(parts))
     return "\n".join(lines)
 
 
@@ -90,7 +101,7 @@ def _render_footer(
     if session.status == "failed":
         return "已停止"
     if session.status != "completed":
-        running_tools = [t for t in session.tools.values() if t.status == "running"]
+        running_tools = [t for t in session.tools if t.status == "running"]
         if running_tools:
             spinner = SPINNER_FRAMES[session.heartbeat_count % len(SPINNER_FRAMES)]
             names = ", ".join(f"`{t.name}`" for t in running_tools[:2])

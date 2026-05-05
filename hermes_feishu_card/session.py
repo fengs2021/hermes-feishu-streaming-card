@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from .events import SidecarEvent
 from .text import StreamingTextNormalizer, normalize_stream_text
@@ -24,7 +24,7 @@ class CardSession:
     last_sequence: int = -1
     thinking_text: str = ""
     answer_text: str = ""
-    tools: Dict[str, ToolState] = field(default_factory=dict)
+    tools: List[ToolState] = field(default_factory=list)
     tokens: Dict[str, Any] = field(default_factory=dict)
     model: str = "Unknown"
     context: Dict[str, Any] = field(default_factory=dict)
@@ -32,6 +32,7 @@ class CardSession:
     thinking_normalizer: StreamingTextNormalizer = field(default_factory=StreamingTextNormalizer)
     answer_normalizer: StreamingTextNormalizer = field(default_factory=StreamingTextNormalizer)
     heartbeat_count: int = 0
+    _tool_seq: int = 0
 
     @property
     def tool_count(self) -> int:
@@ -64,18 +65,25 @@ class CardSession:
         elif event.event == "answer.delta":
             self.answer_text += self.answer_normalizer.feed(str(event.data.get("text", "")))
         elif event.event == "tool.updated":
-            tool_id = event.data.get("tool_id")
-            if not isinstance(tool_id, str) or not tool_id:
-                return True
             name = event.data.get("name")
-            status = event.data.get("status")
-            detail = event.data.get("detail")
-            self.tools[tool_id] = ToolState(
-                tool_id=tool_id,
-                name=name if isinstance(name, str) else tool_id,
-                status=status if isinstance(status, str) else "running",
-                detail=detail if isinstance(detail, str) else "",
-            )
+            if not isinstance(name, str) or not name.strip():
+                return True
+            name = name.strip()
+            status = event.data.get("status") or "running"
+            detail = event.data.get("detail") or ""
+            # 查找同名未完成的条目更新状态，否则追加新条目
+            existing = _find_tool(self.tools, name, status, detail)
+            if existing:
+                existing.status = status
+                existing.detail = detail
+            else:
+                self._tool_seq += 1
+                self.tools.append(ToolState(
+                    tool_id=f"t{self._tool_seq}",
+                    name=name,
+                    status=status,
+                    detail=detail,
+                ))
         elif event.event == "message.completed":
             self.status = "completed"
             self.answer_text = normalize_stream_text(str(event.data.get("answer") or self.answer_text))
@@ -94,3 +102,14 @@ class CardSession:
             error = event.data.get("error")
             self.answer_text = error if isinstance(error, str) else "消息处理失败"
         return True
+
+
+def _find_tool(tools: List[ToolState], name: str, status: str, detail: str) -> ToolState | None:
+    """查找同名最近一个条目：running事件总是新增；completed事件更新最近running条目。"""
+    if status == "running":
+        return None
+    # completed 事件：找最近一个同名 running 条目
+    for t in reversed(tools):
+        if t.name == name and t.status == "running":
+            return t
+    return None

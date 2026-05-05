@@ -432,7 +432,7 @@ async def _heartbeat_loop(app: web.Application) -> None:
         for message_id, session in list(sessions.items()):
             if session.status in TERMINAL_EVENTS:
                 continue
-            running = any(t.status == "running" for t in session.tools.values())
+            running = any(t.status == "running" for t in session.tools)
             if not running:
                 continue
             
