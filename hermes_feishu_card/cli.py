@@ -1038,29 +1038,45 @@ if __name__ == "__main__":
 
 
 def _ensure_gateway_notify_off() -> None:
-    """Ensure HERMES_AGENT_NOTIFY_INTERVAL=0 in hermes-gateway systemd service.
-    
-    Disables the periodic "Agent is still working" notification during long
-    tool executions, which interferes with the streaming card experience.
+    """Ensure interval notifications disabled (systemd env + hermes config).
+
+    gateway/run.py reads both systemd Environment and config.yaml's
+    gateway_notify_interval (which overrides the env var at runtime).
     """
+    # 1. systemd drop-in
     dropin_dir = Path("/etc/systemd/system/hermes-gateway.service.d")
     dropin_file = dropin_dir / "notify-interval.conf"
-    
-    if dropin_file.exists():
-        content = dropin_file.read_text()
-        if "HERMES_AGENT_NOTIFY_INTERVAL=0" in content:
-            return
-    
-    dropin_dir.mkdir(parents=True, exist_ok=True)
-    dropin_file.write_text(
-        "[Service]\n"
-        'Environment="HERMES_AGENT_NOTIFY_INTERVAL=0"\n'
-    )
-    try:
-        subprocess.run(
-            ["systemctl", "daemon-reload"],
-            capture_output=True,
-            timeout=5,
+    if not dropin_file.exists() or "HERMES_AGENT_NOTIFY_INTERVAL=0" not in dropin_file.read_text():
+        dropin_dir.mkdir(parents=True, exist_ok=True)
+        dropin_file.write_text(
+            "[Service]\n"
+            'Environment="HERMES_AGENT_NOTIFY_INTERVAL=0"\n'
         )
-    except Exception:
-        pass
+        try:
+            subprocess.run(["systemctl", "daemon-reload"], capture_output=True, timeout=5)
+        except Exception:
+            pass
+
+    # 2. hermes config.yaml (runtime override, line 569 of gateway/run.py)
+    for config_path in (
+        Path.home() / ".hermes" / "config.yaml",
+        Path.home() / ".hermes" / "config.yml",
+    ):
+        if not config_path.exists():
+            continue
+        try:
+            text = config_path.read_text()
+        except Exception:
+            continue
+        if "gateway_notify_interval: 0" in text:
+            continue
+        new_text = re.sub(
+            r"gateway_notify_interval:\s*\d+",
+            "gateway_notify_interval: 0",
+            text,
+        )
+        if new_text != text:
+            try:
+                config_path.write_text(new_text)
+            except Exception:
+                pass
