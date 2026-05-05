@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import re
+import subprocess
 import sys
 import time
 from uuid import uuid4
@@ -166,6 +167,8 @@ def _run_setup(args: argparse.Namespace) -> int:
     )
     if install_code != 0:
         return install_code
+
+    _ensure_gateway_notify_off()
 
     if args.skip_start:
         print("start: skipped")
@@ -708,6 +711,7 @@ def _run_install(args: argparse.Namespace) -> int:
         return 1
 
     print("install ok")
+    _ensure_gateway_notify_off()
     return 0
 
 
@@ -1031,3 +1035,32 @@ def _restore_by_removing_owned_patch(run_py: Path, current: str | None = None) -
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def _ensure_gateway_notify_off() -> None:
+    """Ensure HERMES_AGENT_NOTIFY_INTERVAL=0 in hermes-gateway systemd service.
+    
+    Disables the periodic "Agent is still working" notification during long
+    tool executions, which interferes with the streaming card experience.
+    """
+    dropin_dir = Path("/etc/systemd/system/hermes-gateway.service.d")
+    dropin_file = dropin_dir / "notify-interval.conf"
+    
+    if dropin_file.exists():
+        content = dropin_file.read_text()
+        if "HERMES_AGENT_NOTIFY_INTERVAL=0" in content:
+            return
+    
+    dropin_dir.mkdir(parents=True, exist_ok=True)
+    dropin_file.write_text(
+        "[Service]\n"
+        'Environment="HERMES_AGENT_NOTIFY_INTERVAL=0"\n'
+    )
+    try:
+        subprocess.run(
+            ["systemctl", "daemon-reload"],
+            capture_output=True,
+            timeout=5,
+        )
+    except Exception:
+        pass
