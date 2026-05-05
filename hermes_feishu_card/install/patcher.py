@@ -11,6 +11,10 @@ ANSWER_DELTA_PATCH_BEGIN = "# HERMES_FEISHU_CARD_ANSWER_DELTA_PATCH_BEGIN"
 ANSWER_DELTA_PATCH_END = "# HERMES_FEISHU_CARD_ANSWER_DELTA_PATCH_END"
 THINKING_DELTA_PATCH_BEGIN = "# HERMES_FEISHU_CARD_THINKING_DELTA_PATCH_BEGIN"
 THINKING_DELTA_PATCH_END = "# HERMES_FEISHU_CARD_THINKING_DELTA_PATCH_END"
+REASONING_CB_PATCH_BEGIN = "# HERMES_FEISHU_CARD_REASONING_CB_PATCH_BEGIN"
+REASONING_CB_PATCH_END = "# HERMES_FEISHU_CARD_REASONING_CB_PATCH_END"
+REASONING_BINDING_PATCH_BEGIN = "# HERMES_FEISHU_CARD_REASONING_BINDING_PATCH_BEGIN"
+REASONING_BINDING_PATCH_END = "# HERMES_FEISHU_CARD_REASONING_BINDING_PATCH_END"
 
 _HANDLER_NAME = "_handle_message_with_agent"
 _NO_FINAL_NEWLINE = "# HERMES_FEISHU_CARD_NO_FINAL_NEWLINE"
@@ -48,7 +52,7 @@ def apply_patch(content: str) -> str:
         ),
         required_callback_args=("text",),
     )
-    return _apply_callback_patch(
+    content = _apply_callback_patch(
         content,
         callback_name="_interim_assistant_cb",
         begin_marker=THINKING_DELTA_PATCH_BEGIN,
@@ -62,6 +66,9 @@ def apply_patch(content: str) -> str:
         ),
         required_callback_args=("text", "already_streamed"),
     )
+    content = _apply_reasoning_cb_patch(content)
+    content = _apply_reasoning_binding_patch(content)
+    return content
 
 
 def _apply_start_patch(content: str) -> str:
@@ -139,6 +146,14 @@ def remove_patch(content: str) -> str:
         "thinking delta patch markers",
     )
     content = _remove_complete_patch(content)
+    content = _remove_reasoning_binding_patch(content)
+    content = _remove_simple_owned_patch(
+        content,
+        REASONING_CB_PATCH_BEGIN,
+        REASONING_CB_PATCH_END,
+        _render_reasoning_cb_block,
+        "reasoning cb patch markers",
+    )
     owned_block = _find_owned_block(content)
     if owned_block is None:
         return content
@@ -171,6 +186,8 @@ def remove_patch_lenient(content: str) -> str:
         (TOOL_PATCH_BEGIN, TOOL_PATCH_END),
         (ANSWER_DELTA_PATCH_BEGIN, ANSWER_DELTA_PATCH_END),
         (THINKING_DELTA_PATCH_BEGIN, THINKING_DELTA_PATCH_END),
+        (REASONING_CB_PATCH_BEGIN, REASONING_CB_PATCH_END),
+        (REASONING_BINDING_PATCH_BEGIN, REASONING_BINDING_PATCH_END),
     ):
         owned_block = _find_simple_marker_block(
             content,
@@ -846,3 +863,91 @@ def _strip_line_ending(line: str) -> str:
 
 def _leading_whitespace(line: str) -> str:
     return line[: len(line) - len(line.lstrip(" \t"))]
+
+
+def _render_reasoning_cb_block(indent: str, newline: str) -> list[str]:
+    inner = _child_indent(indent)
+    deeper = _child_indent(inner)
+    return [
+        f"{indent}{REASONING_CB_PATCH_BEGIN}{newline}",
+        f"{indent}def _reasoning_cb(text: str) -> None:{newline}",
+        f'{inner}"""Send DeepSeek reasoning content as thinking.delta events to sidecar."""{newline}',
+        f"{inner}if not text or not _run_still_current():{newline}",
+        f"{deeper}return{newline}",
+        f"{inner}try:{newline}",
+        f"{deeper}from hermes_feishu_card.hook_runtime import emit_from_hermes_locals_threadsafe as _hfc_emit_threadsafe{newline}",
+        f"{deeper}_hfc_emit_threadsafe({{{newline}",
+        f'{deeper}    "source": source,{newline}',
+        f'{deeper}    "message_id": event_message_id,{newline}',
+        f'{deeper}    "_hfc_loop": _loop_for_step,{newline}',
+        f'{deeper}    "text": text,{newline}',
+        f"{deeper}}}, event_name=\"thinking.delta\"){newline}",
+        f"{inner}except Exception:{newline}",
+        f"{deeper}pass{newline}",
+        f"{indent}{REASONING_CB_PATCH_END}{newline}",
+    ]
+
+
+def _apply_reasoning_cb_patch(content: str) -> str:
+    """在 _interim_assistant_cb 函数定义后插入 _reasoning_cb。"""
+    owned = _find_simple_marker_block(content, REASONING_CB_PATCH_BEGIN, REASONING_CB_PATCH_END, "reasoning cb markers")
+    if owned is not None:
+        lines = content.splitlines(keepends=True)
+        begin, end = owned
+        indent = _leading_whitespace(_strip_line_ending(lines[begin]))
+        newline = _line_ending(lines[begin]) or _detect_newline(content)
+        expected = _render_reasoning_cb_block(indent, newline)
+        if lines[begin:end + 1] == expected:
+            return content
+        return "".join(lines[:begin] + expected + lines[end + 1:])
+
+    tree = _parse_content(content)
+    lines = content.splitlines(keepends=True)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_interim_assistant_cb":
+            end_line = getattr(node, "end_lineno", None) or node.lineno
+            indent = _leading_whitespace(_strip_line_ending(lines[node.lineno - 1]))
+            newline = _detect_newline(content)
+            hook = _render_reasoning_cb_block(indent, newline)
+            return "".join(lines[:end_line] + hook + lines[end_line:])
+    return content
+
+
+def _render_reasoning_binding_block(indent: str, newline: str) -> list[str]:
+    return [
+        f"{indent}{REASONING_BINDING_PATCH_BEGIN}{newline}",
+        f"{indent}agent.reasoning_callback = _reasoning_cb if _want_interim_messages else None{newline}",
+        f"{indent}{REASONING_BINDING_PATCH_END}{newline}",
+    ]
+
+
+def _apply_reasoning_binding_patch(content: str) -> str:
+    """在 agent.interim_assistant_callback 绑定后插入 reasoning_callback 绑定。"""
+    owned = _find_simple_marker_block(content, REASONING_BINDING_PATCH_BEGIN, REASONING_BINDING_PATCH_END, "reasoning binding markers")
+    if owned is not None:
+        lines = content.splitlines(keepends=True)
+        begin, end = owned
+        indent = _leading_whitespace(_strip_line_ending(lines[begin]))
+        newline = _line_ending(lines[begin]) or _detect_newline(content)
+        expected = _render_reasoning_binding_block(indent, newline)
+        if lines[begin:end + 1] == expected:
+            return content
+        return "".join(lines[:begin] + expected + lines[end + 1:])
+
+    lines = content.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if "agent.interim_assistant_callback = _interim_assistant_cb" in line:
+            indent = _leading_whitespace(_strip_line_ending(line))
+            newline = _line_ending(line) or _detect_newline(content)
+            hook = _render_reasoning_binding_block(indent, newline)
+            return "".join(lines[:i + 1] + hook + lines[i + 1:])
+    return content
+
+
+def _remove_reasoning_binding_patch(content: str) -> str:
+    owned = _find_simple_marker_block(content, REASONING_BINDING_PATCH_BEGIN, REASONING_BINDING_PATCH_END, "reasoning binding markers")
+    if owned is None:
+        return content
+    lines = content.splitlines(keepends=True)
+    begin, end = owned
+    return "".join(lines[:begin] + lines[end + 1:])
