@@ -31,6 +31,7 @@ class CardSession:
     duration: float = 0.0
     thinking_normalizer: StreamingTextNormalizer = field(default_factory=StreamingTextNormalizer)
     answer_normalizer: StreamingTextNormalizer = field(default_factory=StreamingTextNormalizer)
+    heartbeat_count: int = 0
 
     @property
     def tool_count(self) -> int:

@@ -14,6 +14,7 @@ DEFAULT_FOOTER_FIELDS = (
 )
 MAIN_CONTENT_CHUNK_CHARS = 2400
 DEFAULT_TITLE = "Hermes Agent"
+SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
 def render_card(
     session: CardSession,
@@ -89,6 +90,13 @@ def _render_footer(
     if session.status == "failed":
         return "已停止"
     if session.status != "completed":
+        running_tools = [t for t in session.tools.values() if t.status == "running"]
+        if running_tools:
+            spinner = SPINNER_FRAMES[session.heartbeat_count % len(SPINNER_FRAMES)]
+            names = ", ".join(f"`{t.name}`" for t in running_tools[:2])
+            if len(running_tools) > 2:
+                names += f" +{len(running_tools)-2}"
+            return f"{spinner} {names} 执行中"
         return "生成中"
     tokens = session.tokens if isinstance(session.tokens, dict) else {}
     input_tokens = _safe_int(tokens.get("input_tokens"))
