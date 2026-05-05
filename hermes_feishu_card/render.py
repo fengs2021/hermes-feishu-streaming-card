@@ -60,7 +60,9 @@ def _render_status(session: CardSession) -> Dict[str, str]:
 
 
 def _render_main_content_elements(main_text: str) -> list[Dict[str, Any]]:
-    chunks = _split_text(main_text, MAIN_CONTENT_CHUNK_CHARS)
+    # 飞书 markdown 忽略单换行；转为双空格+换行(=markdown软换行)使其可见
+    text = main_text.replace("\n", "  \n")
+    chunks = _split_text(text, MAIN_CONTENT_CHUNK_CHARS)
     elements = []
     for index, chunk in enumerate(chunks):
         element_id = "main_content" if index == 0 else f"main_content_{index}"
